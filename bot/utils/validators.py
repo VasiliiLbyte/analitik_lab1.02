@@ -17,6 +17,10 @@ _PHONE_RE = re.compile(
 _JUNK_RE = re.compile(
     r"^[\d\s\W]+$", re.UNICODE
 )
+_ORG_PREFIX_RE = re.compile(
+    r"^\s*(ООО|ИП|ОАО|ЗАО|ПАО|АО|НКО|АНО|ГБУ|МУП|ГУП|ФГУП|ФГБУ)\b",
+    re.IGNORECASE,
+)
 
 
 def _checksum(digits: str, weights: tuple[int, ...]) -> int:
@@ -80,6 +84,11 @@ def validate_org_name(value: str) -> tuple[bool, str]:
         return False, "Название организации слишком короткое (мин. 3 символа)."
     if len(cleaned) > 300:
         return False, "Название организации слишком длинное (макс. 300 символов)."
+    if not _ORG_PREFIX_RE.match(cleaned):
+        return (
+            False,
+            "Укажите юр. форму и название (например: ООО \"Ромашка\", ИП Иванов, АО ТехСервис).",
+        )
     return True, cleaned
 
 

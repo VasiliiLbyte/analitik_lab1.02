@@ -79,6 +79,12 @@ class TestValidateOrgName:
     def test_valid_name(self):
         ok, result = validate_org_name('ООО "Тестовая компания"')
         assert ok is True
+        assert result == 'ООО "Тестовая компания"'
+
+    def test_valid_ip_name(self):
+        ok, result = validate_org_name("ИП Иванов Иван Иванович")
+        assert ok is True
+        assert result == "ИП Иванов Иван Иванович"
 
     def test_too_short(self):
         ok, _ = validate_org_name("AB")
@@ -86,6 +92,15 @@ class TestValidateOrgName:
 
     def test_too_long(self):
         ok, _ = validate_org_name("A" * 301)
+        assert ok is False
+
+    def test_requires_legal_prefix(self):
+        ok, message = validate_org_name("Компания Ромашка")
+        assert ok is False
+        assert "юр. форму" in message
+
+    def test_rejects_menu_button_text(self):
+        ok, _ = validate_org_name("🛒 Корзина")
         assert ok is False
 
 
