@@ -45,6 +45,18 @@ _CART_NAV_KEYWORDS = {
     "cart",
     "🛒",
 }
+_CLEAR_CART_KEYWORDS = {
+    "очисти корзину",
+    "очистить корзину",
+    "очисти карзину",
+    "очистить карзину",
+    "отчисти корзину",
+    "отчистить корзину",
+    "отчисти карзину",
+    "отчистить карзину",
+    "clear cart",
+    "clear the cart",
+}
 
 
 @router.message(StateFilter(None))
@@ -57,6 +69,13 @@ async def handle_free_text(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id  # type: ignore[union-attr]
     lowered = text.lower()
 
+    # --- High-priority company/about queries (bypass LLM) ---
+    about_tokens = ("компан", "лаборатор", "сайт", "адрес", "инн", "кпп")
+    if any(token in lowered for token in about_tokens):
+        from bot.handlers.faq import handle_about
+        await handle_about(message)
+        return
+
     # --- High-priority navigation to cart ---
     # These commands must bypass LLM and route directly to cart.
     if (
@@ -67,6 +86,103 @@ async def handle_free_text(message: Message, state: FSMContext) -> None:
         from bot.handlers.cart import handle_cart_button
         await handle_cart_button(message)
         return
+
+    # --- High-priority clear cart commands (including common typos) ---
+    if (
+        lowered in _CLEAR_CART_KEYWORDS
+        or ("карзин" in lowered and ("очист" in lowered or "отчист" in lowered))
+        or ("корзин" in lowered and ("очист" in lowered or "отчист" in lowered))
+    ):
+        from bot.services.cart_service import clear_cart
+        async with get_session() as session:
+            count = await clear_cart(session, user_id)
+        await message.answer(
+            f"🗑 Корзина очищена (удалено позиций: {count}).",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    # --- High-priority informational category requests with suggestions ---
+    if (
+        ("какие" in lowered or "какой" in lowered or "вариант" in lowered)
+        and ("анализ" in lowered or "услуг" in lowered)
+    ):
+        loader = PriceLoader.get()
+        topic_map = {
+            "почв": "почва",
+            "вод": "вода",
+            "радиац": "радиолог",
+            "гамма": "гамма",
+        }
+        topic_query = None
+        for token, query in topic_map.items():
+            if token in lowered:
+                topic_query = query
+                break
+        if topic_query:
+            suggestions = loader.search(topic_query, limit=5)
+            if suggestions:
+                lines = [f"🔎 <b>Похожие услуги по запросу «{text}»:</b>\n"]
+                for svc in suggestions:
+                    lines.append(
+                        f"• {svc.name} — {svc.price:,.2f} руб./{svc.unit}\n"
+                        f"  Категория: {svc.category_name}"
+                    )
+                lines.append("\nНапишите название услуги, и я добавлю ее в корзину.")
+                await message.answer("\n".join(lines), parse_mode="HTML")
+                return
+
+    # --- High-priority "tell me about analysis" requests with direct similar matches ---
+    explain_tokens = ("расскажи про анализ", "что за анализ", "информация об анализе", "расскажи об анализе")
+    if any(token in lowered for token in explain_tokens):
+        query = (
+            lowered.replace("расскажи про анализ", "")
+            .replace("расскажи об анализе", "")
+            .replace("что за анализ", "")
+            .replace("информация об анализе", "")
+            .strip(" :,-")
+        )
+        if query:
+            loader = PriceLoader.get()
+            results = loader.search(query, limit=5)
+            if results:
+                lines = [f"ℹ️ <b>Похожие услуги по запросу «{text}»:</b>\n"]
+                for svc in results:
+                    lines.append(
+                        f"🔬 <b>{svc.name}</b>\n"
+                        f"   Цена: {svc.price:,.2f} руб. (без НДС) / {svc.unit}\n"
+                        f"   Категория: {svc.category_name}\n"
+                    )
+                lines.append("Напишите название услуги, если нужно добавить ее в корзину.")
+                await message.answer("\n".join(lines), parse_mode="HTML")
+                return
+
+    # --- High-priority "need analysis" requests: suggest first, do not auto-add ---
+    need_tokens = ("мне нужен анализ", "нужен анализ", "хочу анализ", "требуется анализ")
+    if any(token in lowered for token in need_tokens):
+        query = (
+            lowered.replace("мне нужен анализ", "")
+            .replace("нужен анализ", "")
+            .replace("хочу анализ", "")
+            .replace("требуется анализ", "")
+            .strip(" :,-")
+        )
+        if query:
+            loader = PriceLoader.get()
+            suggestions = loader.search(query, limit=5)
+            if suggestions:
+                lines = [f"🔎 <b>Нашёл похожие услуги по запросу «{text}»:</b>\n"]
+                for svc in suggestions:
+                    lines.append(
+                        f"• {svc.name} — {svc.price:,.2f} руб./{svc.unit}\n"
+                        f"  Категория: {svc.category_name}"
+                    )
+                lines.append(
+                    "\nНапишите точное название/часть названия нужной услуги, "
+                    "и я добавлю её в корзину."
+                )
+                await message.answer("\n".join(lines), parse_mode="HTML")
+                return
 
     # --- Junk text detection ---
     if is_junk_text(text):
