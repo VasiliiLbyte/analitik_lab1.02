@@ -29,7 +29,12 @@ from sqlalchemy import func, select
 
 from bot.database.models import Order, OrderItem
 from bot.database.session import get_session
-from bot.keyboards.main import back_cancel_keyboard, confirm_preview_keyboard, main_menu_keyboard
+from bot.keyboards.main import (
+    back_cancel_keyboard,
+    confirm_preview_keyboard,
+    main_menu_keyboard,
+    sample_return_keyboard,
+)
 from bot.services.cart_service import clear_cart, get_cart_items, get_cart_summary, get_or_create_user
 from bot.services.kp_generator import build_kp_data, generate_kp
 from bot.states.kp_form import KPForm
@@ -55,16 +60,30 @@ _STEP_ORDER: list = [
     KPForm.address,
     KPForm.contact_person,
     KPForm.contact_info,
+    KPForm.sample_location,
+    KPForm.research_deadline,
+    KPForm.sample_return,
     KPForm.preview,
 ]
 
 _STEP_PROMPTS = {
-    KPForm.org_name: "<b>Шаг 1/6:</b> Введите название организации заказчика:",
-    KPForm.inn: "<b>Шаг 2/6:</b> Введите ИНН (10 или 12 цифр):",
-    KPForm.kpp: "<b>Шаг 3/6:</b> Введите КПП (9 цифр):",
-    KPForm.address: "<b>Шаг 4/6:</b> Введите юридический адрес:",
-    KPForm.contact_person: "<b>Шаг 5/6:</b> Введите ФИО контактного лица:",
-    KPForm.contact_info: "<b>Шаг 6/6:</b> Введите телефон или email:",
+    KPForm.org_name: "<b>Шаг 1/9:</b> Введите название организации заказчика:",
+    KPForm.inn: "<b>Шаг 2/9:</b> Введите ИНН (10 или 12 цифр):",
+    KPForm.kpp: "<b>Шаг 3/9:</b> Введите КПП (9 цифр):",
+    KPForm.address: "<b>Шаг 4/9:</b> Введите юридический адрес:",
+    KPForm.contact_person: "<b>Шаг 5/9:</b> Введите ФИО контактного лица:",
+    KPForm.contact_info: "<b>Шаг 6/9:</b> Введите телефон или email:",
+    KPForm.sample_location: (
+        "<b>Шаг 7/9:</b> Введите фактическое местоположение объекта отбора проб:"
+    ),
+    KPForm.research_deadline: (
+        "<b>Шаг 8/9:</b> Сроки проведения исследований (при необходимости).\n"
+        "Можно указать «не требуется»."
+    ),
+    KPForm.sample_return: (
+        "<b>Шаг 9/9:</b> Возврат неиспользованной части проб?\n"
+        "Напишите: «да», «нет» или комментарий."
+    ),
 }
 
 _VALIDATORS = {
@@ -74,6 +93,9 @@ _VALIDATORS = {
     KPForm.address: ("address", validate_address),
     KPForm.contact_person: ("contact_person", validate_contact_person),
     KPForm.contact_info: ("contact_info", validate_contact_info),
+    KPForm.sample_location: ("sample_location", validate_address),
+    KPForm.research_deadline: ("research_deadline", lambda v: (True, v.strip()[:300] or "не требуется")),
+    KPForm.sample_return: ("sample_return", lambda v: (True, v.strip()[:300])),
 }
 
 
@@ -123,9 +145,21 @@ async def _go_back(message: Message, state: FSMContext) -> bool:
 
 # --- Step handlers ---
 
-@router.message(StateFilter(KPForm.org_name, KPForm.inn, KPForm.kpp, KPForm.address, KPForm.contact_person, KPForm.contact_info))
+@router.message(
+    StateFilter(
+        KPForm.org_name,
+        KPForm.inn,
+        KPForm.kpp,
+        KPForm.address,
+        KPForm.contact_person,
+        KPForm.contact_info,
+        KPForm.sample_location,
+        KPForm.research_deadline,
+        KPForm.sample_return,
+    )
+)
 async def handle_kp_step(message: Message, state: FSMContext) -> None:
-    """Universal handler for all 6 KP form data steps."""
+    """Universal handler for all KP form data steps."""
     if await _handle_cancel(message, state):
         return
 
@@ -170,14 +204,16 @@ async def handle_kp_step(message: Message, state: FSMContext) -> None:
     else:
         await state.set_state(next_state)
         prompt = _STEP_PROMPTS[next_state]
-        await message.answer(prompt, reply_markup=back_cancel_keyboard(), parse_mode="HTML")
+        keyboard = sample_return_keyboard() if next_state == KPForm.sample_return else back_cancel_keyboard()
+        await message.answer(prompt, reply_markup=keyboard, parse_mode="HTML")
 
 
-async def _show_preview(message: Message, state: FSMContext) -> None:
+async def _show_preview(message: Message, state: FSMContext, user_id: int | None = None) -> None:
     """Show preview of all entered data for confirmation."""
     data = await state.get_data()
 
-    user_id = message.from_user.id  # type: ignore[union-attr]
+    if user_id is None:
+        user_id = message.from_user.id  # type: ignore[union-attr]
     try:
         async with get_session() as session:
             summary = await get_cart_summary(session, user_id)
@@ -193,6 +229,9 @@ async def _show_preview(message: Message, state: FSMContext) -> None:
         f"<b>Адрес:</b> {data.get('address', '—')}\n"
         f"<b>Контактное лицо:</b> {data.get('contact_person', '—')}\n"
         f"<b>Телефон/Email:</b> {data.get('contact_info', '—')}\n\n"
+        f"<b>Местоположение объекта:</b> {data.get('sample_location', '—')}\n"
+        f"<b>Сроки исследований:</b> {data.get('research_deadline', '—')}\n"
+        f"<b>Возврат неиспользованной части проб:</b> {data.get('sample_return', '—')}\n\n"
         f"<b>Позиций в корзине:</b> {summary.item_count}\n"
         f"<b>Сметная стоимость:</b> {summary.subtotal:,.2f} руб.\n"
         f"<b>Оформление протоколов (3%):</b> {summary.protocol_fee:,.2f} руб.\n"
@@ -216,10 +255,10 @@ async def handle_preview_text(message: Message, state: FSMContext) -> None:
         )
         return
     if text in _BACK_WORDS:
-        await state.set_state(KPForm.contact_info)
+        await state.set_state(KPForm.sample_return)
         await message.answer(
-            _STEP_PROMPTS[KPForm.contact_info],
-            reply_markup=back_cancel_keyboard(),
+            _STEP_PROMPTS[KPForm.sample_return],
+            reply_markup=sample_return_keyboard(),
             parse_mode="HTML",
         )
         return
@@ -268,6 +307,9 @@ async def callback_kp_confirm(callback: CallbackQuery, state: FSMContext) -> Non
                 customer_address=data["address"],
                 contact_person=data["contact_person"],
                 contact_info=data["contact_info"],
+                sample_location=data.get("sample_location", ""),
+                research_deadline=data.get("research_deadline", ""),
+                sample_return=data.get("sample_return", ""),
                 cart_items=cart_items,
             )
 
@@ -399,7 +441,28 @@ async def callback_kp_back(callback: CallbackQuery, state: FSMContext) -> None:
     prompt = _STEP_PROMPTS.get(prev_state, "Введите данные:")
 
     text = f"✏️ Текущее значение: {current_val}\n\n{prompt}" if current_val else prompt
+    keyboard = sample_return_keyboard() if prev_state == KPForm.sample_return else back_cancel_keyboard()
     await callback.message.answer(  # type: ignore[union-attr]
-        text, reply_markup=back_cancel_keyboard(), parse_mode="HTML"
+        text, reply_markup=keyboard, parse_mode="HTML"
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("sample_return:"), StateFilter(KPForm.sample_return))
+async def callback_sample_return(callback: CallbackQuery, state: FSMContext) -> None:
+    """Quick-select sample return option and go to preview."""
+    option = (callback.data or "").split(":")[-1]
+    mapping = {
+        "yes": "да",
+        "no": "нет",
+        "later": "уточню дополнительно",
+    }
+    value = mapping.get(option)
+    if value is None:
+        await callback.answer()
+        return
+
+    await state.update_data(sample_return=value)
+    await state.set_state(KPForm.preview)
+    await _show_preview(callback.message, state, user_id=callback.from_user.id)  # type: ignore[arg-type]
     await callback.answer()

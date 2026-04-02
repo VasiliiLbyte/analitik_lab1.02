@@ -60,6 +60,22 @@ def confirm_preview_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def sample_return_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да", callback_data="sample_return:yes"),
+                InlineKeyboardButton(text="❌ Нет", callback_data="sample_return:no"),
+                InlineKeyboardButton(text="📝 Уточню", callback_data="sample_return:later"),
+            ],
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="kp_back"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="kp_cancel"),
+            ],
+        ]
+    )
+
+
 def low_confidence_keyboard(suggestions: list[tuple[str, str]]) -> InlineKeyboardMarkup:
     """Keyboard with top-N service suggestions when LLM confidence is low."""
     buttons = [

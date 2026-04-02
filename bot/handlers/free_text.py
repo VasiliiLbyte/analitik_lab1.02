@@ -14,6 +14,7 @@ Protection scenarios:
 from __future__ import annotations
 
 import logging
+import re
 
 from aiogram import Router
 from aiogram.filters import StateFilter
@@ -23,7 +24,12 @@ from aiogram.types import Message
 from bot.database.session import get_session
 from bot.keyboards.categories import categories_keyboard
 from bot.keyboards.main import low_confidence_keyboard, main_menu_keyboard
-from bot.services.cart_service import add_item, format_cart_for_llm, get_cart_items
+from bot.services.cart_service import (
+    add_item,
+    format_cart_for_llm,
+    get_cart_items,
+    set_item_quantity,
+)
 from bot.services.llm_intent import get_gigachat_client
 from bot.services.price_loader import PriceLoader
 from bot.states.kp_form import KPForm
@@ -68,6 +74,10 @@ async def handle_free_text(message: Message, state: FSMContext) -> None:
 
     user_id = message.from_user.id  # type: ignore[union-attr]
     lowered = text.lower()
+
+    # --- High-priority cart quantity updates (existing cart items only) ---
+    if await _handle_cart_quantity_update(message, user_id, lowered):
+        return
 
     # --- High-priority company/about queries (bypass LLM) ---
     about_tokens = ("компан", "лаборатор", "сайт", "адрес", "инн", "кпп")
@@ -399,3 +409,67 @@ async def _handle_explain(message: Message, intent) -> None:
             "Попробуйте другую формулировку или откройте каталог.",
             reply_markup=categories_keyboard(),
         )
+
+
+async def _handle_cart_quantity_update(message: Message, user_id: int, lowered_text: str) -> bool:
+    """Update quantity for items that already exist in cart."""
+    match = re.search(r"(?:позици[яию]\s*(\d+).{0,20})?(\d+)\s*шт", lowered_text)
+    if not match:
+        return False
+
+    position_num = int(match.group(1)) if match.group(1) else None
+    target_qty = int(match.group(2))
+    if target_qty <= 0:
+        return False
+
+    async with get_session() as session:
+        items = await get_cart_items(session, user_id)
+        if not items:
+            await message.answer("🛒 Корзина пуста. Сначала добавьте услуги.")
+            return True
+
+        target_item = None
+        if position_num is not None:
+            idx = position_num - 1
+            if 0 <= idx < len(items):
+                target_item = items[idx]
+        else:
+            query = re.sub(
+                r"(сделай|поставь|измени|измени|кол-?во|количество|шт|на|\d+|позици[яию])",
+                " ",
+                lowered_text,
+            )
+            query = " ".join(query.split())
+            if query:
+                ranked = sorted(
+                    items,
+                    key=lambda it: PriceLoader.get().search(query, limit=1)[0].name
+                    if PriceLoader.get().search(query, limit=1)
+                    else "",
+                )
+                # robust local matching against cart names
+                by_name = sorted(
+                    items,
+                    key=lambda it: (
+                        0 if query and query in it.service_name.lower() else 1,
+                        len(it.service_name),
+                    ),
+                )
+                target_item = by_name[0] if by_name and query in by_name[0].service_name.lower() else None
+
+        if target_item is None:
+            await message.answer(
+                "Не нашёл такую позицию в корзине. Укажите номер, например: «позиция 2 — 3 шт»."
+            )
+            return True
+
+        updated = await set_item_quantity(session, user_id, target_item.service_id, target_qty)
+        if updated is None:
+            await message.answer("Не удалось обновить количество. Позиция не найдена в корзине.")
+            return True
+
+        await message.answer(
+            f"✅ Обновил количество:\n"
+            f"{updated.service_name} → {updated.quantity} шт."
+        )
+        return True

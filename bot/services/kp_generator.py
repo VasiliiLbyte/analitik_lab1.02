@@ -64,6 +64,9 @@ class KPData:
     customer_address: str
     contact_person: str
     contact_info: str
+    sample_location: str = ""
+    research_deadline: str = ""
+    sample_return: str = ""
     groups: list[KPCategoryGroup] = field(default_factory=list)
     subtotal: float = 0.0
     protocol_fee: float = 0.0
@@ -136,6 +139,9 @@ def build_kp_data(
     contact_person: str,
     contact_info: str,
     cart_items: list,
+    sample_location: str = "",
+    research_deadline: str = "",
+    sample_return: str = "",
 ) -> KPData:
     """Build KPData from cart items, grouping by category with auto protocol fee."""
     settings = get_settings()
@@ -184,6 +190,9 @@ def build_kp_data(
         customer_address=customer_address,
         contact_person=contact_person,
         contact_info=contact_info,
+        sample_location=sample_location,
+        research_deadline=research_deadline,
+        sample_return=sample_return,
         groups=groups,
         subtotal=subtotal,
         protocol_fee=protocol_fee,
@@ -244,6 +253,22 @@ def generate_kp(data: KPData) -> Path:
     p.add_run(
         f'{data.customer_name}, ИНН {data.customer_inn}, '
         f'КПП {data.customer_kpp}, {data.customer_address}'
+    ).font.name = "Times New Roman"
+
+    # --- Additional application conditions ---
+    doc.add_paragraph("")
+    p = doc.add_paragraph()
+    run = p.add_run("Дополнительные условия заявки:")
+    run.bold = True
+    run.font.name = "Times New Roman"
+
+    p = doc.add_paragraph()
+    p.add_run(f"Фактическое местоположение объекта: {data.sample_location or 'не указано'}").font.name = "Times New Roman"
+    p = doc.add_paragraph()
+    p.add_run(f"Сроки проведения исследований: {data.research_deadline or 'не требуется'}").font.name = "Times New Roman"
+    p = doc.add_paragraph()
+    p.add_run(
+        f"Возврат неиспользованной части проб: {data.sample_return or 'не указано'}"
     ).font.name = "Times New Roman"
 
     # --- Service table ---

@@ -125,6 +125,30 @@ async def get_cart_items(session: AsyncSession, telegram_id: int) -> list[CartIt
     return list(result.scalars().all())
 
 
+async def set_item_quantity(
+    session: AsyncSession,
+    telegram_id: int,
+    service_id: str,
+    quantity: int,
+) -> CartItem | None:
+    """Set exact quantity for an existing cart item."""
+    user = await get_or_create_user(session, telegram_id)
+    quantity = max(1, int(quantity))
+
+    result = await session.execute(
+        select(CartItem).where(
+            CartItem.user_id == user.id, CartItem.service_id == service_id
+        )
+    )
+    item = result.scalar_one_or_none()
+    if item is None:
+        return None
+
+    item.quantity = quantity
+    await session.flush()
+    return item
+
+
 async def get_cart_summary(session: AsyncSession, telegram_id: int) -> CartSummary:
     """Compute full cart summary including dynamic 3% protocol fee and NDS."""
     settings = get_settings()
