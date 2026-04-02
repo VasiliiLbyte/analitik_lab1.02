@@ -1,0 +1,230 @@
+"""Handler: Free text catch-all — routes messages through LLM Intent Recognizer.
+
+This handler is registered LAST so it only catches messages not handled by other routers.
+
+Protection scenarios:
+- Junk text (only digits/emoji/special) -> helpful fallback
+- Messages > 2000 chars -> truncated before LLM
+- Low confidence (< 0.75) -> show suggestion buttons
+- LLM returns non-existing service -> filtered out
+- LLM fails entirely -> fallback with category buttons
+- Jailbreak attempts -> blocked at llm_intent level
+"""
+
+from __future__ import annotations
+
+import logging
+
+from aiogram import Router
+from aiogram.filters import StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.types import Message
+
+from bot.database.session import get_session
+from bot.keyboards.categories import categories_keyboard
+from bot.keyboards.main import low_confidence_keyboard, main_menu_keyboard
+from bot.services.cart_service import add_item, format_cart_for_llm, get_cart_items
+from bot.services.llm_intent import get_gigachat_client
+from bot.services.price_loader import PriceLoader
+from bot.states.kp_form import KPForm
+from bot.utils.validators import is_junk_text, sanitise_for_llm
+
+router = Router(name="free_text")
+logger = logging.getLogger(__name__)
+
+_CONFIDENCE_THRESHOLD = 0.75
+
+
+@router.message(StateFilter(None))
+async def handle_free_text(message: Message, state: FSMContext) -> None:
+    """Catch-all handler for free-text messages — processes via LLM."""
+    text = (message.text or "").strip()
+    if not text:
+        return
+
+    user_id = message.from_user.id  # type: ignore[union-attr]
+
+    # --- Junk text detection ---
+    if is_junk_text(text):
+        await message.answer(
+            "🤔 Не удалось понять ваш запрос.\n"
+            "Попробуйте написать, какие анализы вам нужны, "
+            "или воспользуйтесь каталогом.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    # --- Truncate long messages ---
+    cleaned = sanitise_for_llm(text)
+
+    # --- Build cart context for LLM ---
+    try:
+        async with get_session() as session:
+            cart_items = await get_cart_items(session, user_id)
+        cart_text = format_cart_for_llm(cart_items)
+    except Exception:
+        cart_text = ""
+
+    # --- Call LLM ---
+    client = get_gigachat_client()
+    try:
+        intent = await client.recognise_intent(cleaned, cart_text)
+    except Exception:
+        logger.exception("LLM intent recognition failed")
+        await message.answer(
+            "🔧 Сервис распознавания временно недоступен.\n"
+            "Воспользуйтесь каталогом услуг:",
+            reply_markup=categories_keyboard(),
+        )
+        return
+
+    logger.info(
+        "User %d intent: action=%s confidence=%.2f services=%s",
+        user_id, intent.action, intent.confidence, [s.service_id for s in intent.services],
+    )
+
+    # --- Low confidence handling ---
+    if intent.confidence < _CONFIDENCE_THRESHOLD and intent.action != "unknown":
+        loader = PriceLoader.get()
+        suggestions = loader.search(cleaned, limit=3)
+        if suggestions:
+            pairs = [(s.id, s.name) for s in suggestions]
+            await message.answer(
+                "🤔 Не совсем понял. Возможно, вы имели в виду:",
+                reply_markup=low_confidence_keyboard(pairs),
+            )
+        else:
+            await message.answer(
+                "🤔 Не удалось распознать запрос. Попробуйте каталог:",
+                reply_markup=categories_keyboard(),
+            )
+        return
+
+    # --- Route by action ---
+    if intent.action == "add_to_cart":
+        await _handle_add_to_cart(message, user_id, intent)
+    elif intent.action == "remove_from_cart":
+        await _handle_remove_from_cart(message, user_id, intent)
+    elif intent.action == "view_cart":
+        from bot.handlers.cart import handle_cart_button
+        await handle_cart_button(message)
+    elif intent.action == "create_kp":
+        from bot.handlers.cart import handle_create_kp_button
+        await handle_create_kp_button(message, state)
+    elif intent.action == "explain":
+        await _handle_explain(message, intent)
+    elif intent.action == "faq":
+        from bot.handlers.faq import handle_faq
+        await handle_faq(message)
+    elif intent.action == "catalog":
+        from bot.handlers.services import handle_catalog_button
+        await handle_catalog_button(message)
+    elif intent.action == "clear_cart":
+        from bot.services.cart_service import clear_cart
+        async with get_session() as session:
+            await clear_cart(session, user_id)
+        await message.answer("🗑 Корзина очищена.", reply_markup=main_menu_keyboard())
+    elif intent.action == "repeat_order":
+        from bot.handlers.cart import handle_repeat_order
+        await handle_repeat_order(message)
+    else:
+        loader = PriceLoader.get()
+        suggestions = loader.search(cleaned, limit=3)
+        if suggestions:
+            pairs = [(s.id, s.name) for s in suggestions]
+            await message.answer(
+                "🤔 Не совсем понял. Возможно, вас интересует:",
+                reply_markup=low_confidence_keyboard(pairs),
+            )
+        else:
+            await message.answer(
+                "Не удалось распознать запрос. Воспользуйтесь каталогом:",
+                reply_markup=categories_keyboard(),
+            )
+
+
+async def _handle_add_to_cart(message: Message, user_id: int, intent) -> None:
+    """Add services from LLM intent to cart."""
+    if not intent.services:
+        await message.answer(
+            "Не удалось определить конкретные услуги. Попробуйте каталог:",
+            reply_markup=categories_keyboard(),
+        )
+        return
+
+    loader = PriceLoader.get()
+    added_names: list[str] = []
+
+    try:
+        async with get_session() as session:
+            for svc_match in intent.services:
+                svc = loader.get_service(svc_match.service_id)
+                if svc:
+                    await add_item(session, user_id, svc_match.service_id, svc_match.quantity)
+                    added_names.append(f"• {svc.name} ×{svc_match.quantity}")
+    except Exception:
+        logger.exception("Error adding items from LLM intent")
+        await message.answer("❌ Ошибка при добавлении в корзину.")
+        return
+
+    if added_names:
+        text = "✅ Добавлено в корзину:\n" + "\n".join(added_names)
+        text += "\n\nИспользуйте 🛒 Корзина для просмотра."
+        await message.answer(text, reply_markup=main_menu_keyboard(), parse_mode="HTML")
+    else:
+        await message.answer(
+            "Не удалось найти указанные услуги в прейскуранте.",
+            reply_markup=categories_keyboard(),
+        )
+
+
+async def _handle_remove_from_cart(message: Message, user_id: int, intent) -> None:
+    """Remove services from cart based on LLM intent."""
+    from bot.services.cart_service import remove_item
+
+    if not intent.services:
+        await message.answer("Укажите, какую услугу удалить из корзины.")
+        return
+
+    removed: list[str] = []
+    try:
+        async with get_session() as session:
+            for svc_match in intent.services:
+                ok = await remove_item(session, user_id, svc_match.service_id)
+                if ok:
+                    loader = PriceLoader.get()
+                    svc = loader.get_service(svc_match.service_id)
+                    removed.append(svc.name if svc else svc_match.service_id)
+    except Exception:
+        logger.exception("Error removing items from LLM intent")
+
+    if removed:
+        text = "🗑 Удалено из корзины:\n" + "\n".join(f"• {n}" for n in removed)
+        await message.answer(text, reply_markup=main_menu_keyboard())
+    else:
+        await message.answer("Указанные услуги не найдены в корзине.")
+
+
+async def _handle_explain(message: Message, intent) -> None:
+    """Provide explanation about a service or query."""
+    query = intent.explanation_query or (message.text or "")
+
+    loader = PriceLoader.get()
+    results = loader.search(query, limit=3)
+
+    if results:
+        lines = ["ℹ️ <b>По вашему запросу найдено:</b>\n"]
+        for svc in results:
+            lines.append(
+                f"🔬 <b>{svc.name}</b>\n"
+                f"   Цена: {svc.price:,.2f} руб. (без НДС) / {svc.unit}\n"
+                f"   Категория: {svc.category_name}\n"
+            )
+        lines.append("Для добавления в корзину используйте каталог или напишите запрос.")
+        await message.answer("\n".join(lines), parse_mode="HTML")
+    else:
+        await message.answer(
+            "ℹ️ К сожалению, по вашему запросу ничего не найдено.\n"
+            "Попробуйте другую формулировку или откройте каталог.",
+            reply_markup=categories_keyboard(),
+        )
