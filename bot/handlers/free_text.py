@@ -33,6 +33,18 @@ router = Router(name="free_text")
 logger = logging.getLogger(__name__)
 
 _CONFIDENCE_THRESHOLD = 0.75
+_CART_NAV_KEYWORDS = {
+    "корзина",
+    "в корзину",
+    "в корзине",
+    "покажи корзину",
+    "показать корзину",
+    "перейди в корзину",
+    "открой корзину",
+    "открыть корзину",
+    "cart",
+    "🛒",
+}
 
 
 @router.message(StateFilter(None))
@@ -43,6 +55,18 @@ async def handle_free_text(message: Message, state: FSMContext) -> None:
         return
 
     user_id = message.from_user.id  # type: ignore[union-attr]
+    lowered = text.lower()
+
+    # --- High-priority navigation to cart ---
+    # These commands must bypass LLM and route directly to cart.
+    if (
+        lowered in _CART_NAV_KEYWORDS
+        or "корзин" in lowered
+        or " cart" in f" {lowered}"
+    ):
+        from bot.handlers.cart import handle_cart_button
+        await handle_cart_button(message)
+        return
 
     # --- Junk text detection ---
     if is_junk_text(text):
@@ -84,7 +108,10 @@ async def handle_free_text(message: Message, state: FSMContext) -> None:
     )
 
     # --- Low confidence handling ---
-    if intent.confidence < _CONFIDENCE_THRESHOLD and intent.action != "unknown":
+    if (
+        intent.confidence < _CONFIDENCE_THRESHOLD
+        and intent.action not in {"unknown", "greet", "faq", "show_category", "start_kp_form"}
+    ):
         loader = PriceLoader.get()
         suggestions = loader.search(cleaned, limit=3)
         if suggestions:
@@ -101,7 +128,35 @@ async def handle_free_text(message: Message, state: FSMContext) -> None:
         return
 
     # --- Route by action ---
-    if intent.action == "add_to_cart":
+    if intent.action == "greet":
+        await message.answer(
+            "Здравствуйте! Я помогу подобрать анализы, показать каталог и оформить КП.",
+            reply_markup=main_menu_keyboard(),
+        )
+    elif intent.action == "show_category":
+        water_hits = {"вода", "сточ", "питьев", "природн"}
+        if any(token in cleaned.lower() for token in water_hits):
+            loader = PriceLoader.get()
+            water_services = [
+                svc for svc in loader.search("вода", limit=5)
+                if "вод" in svc.category_name.lower() or "вод" in svc.name.lower()
+            ]
+            if water_services:
+                lines = ["💧 <b>Популярные анализы воды:</b>\n"]
+                for svc in water_services:
+                    lines.append(f"• {svc.name} — {svc.price:,.2f} руб./{svc.unit}")
+                lines.append("\nМогу добавить нужные позиции в корзину по вашему запросу.")
+                await message.answer("\n".join(lines), parse_mode="HTML")
+            else:
+                from bot.handlers.services import handle_catalog_button
+                await handle_catalog_button(message)
+        else:
+            from bot.handlers.services import handle_catalog_button
+            await handle_catalog_button(message)
+    elif intent.action == "start_kp_form":
+        from bot.handlers.cart import handle_create_kp_button
+        await handle_create_kp_button(message, state)
+    elif intent.action == "add_to_cart":
         await _handle_add_to_cart(message, user_id, intent)
     elif intent.action == "remove_from_cart":
         await _handle_remove_from_cart(message, user_id, intent)

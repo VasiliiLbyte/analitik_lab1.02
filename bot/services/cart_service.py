@@ -52,6 +52,9 @@ async def add_item(
     quantity: int = 1,
 ) -> CartItem | None:
     """Add a service to cart. If already present, increase quantity (dedup)."""
+    service_id = service_id.strip()
+    quantity = max(1, int(quantity))
+
     loader = PriceLoader.get()
     svc = loader.get_service(service_id)
     if svc is None:
@@ -65,10 +68,18 @@ async def add_item(
             CartItem.user_id == user.id, CartItem.service_id == service_id
         )
     )
-    existing = result.scalar_one_or_none()
+    existing_items = list(result.scalars().all())
 
-    if existing:
-        existing.quantity += quantity
+    if existing_items:
+        existing = existing_items[0]
+        # Defensive dedup: if duplicates already exist, merge all quantities into first row.
+        merged_quantity = sum(item.quantity for item in existing_items) + quantity
+        existing.quantity = merged_quantity
+        if len(existing_items) > 1:
+            duplicate_ids = [item.id for item in existing_items[1:]]
+            await session.execute(
+                delete(CartItem).where(CartItem.id.in_(duplicate_ids))
+            )
         await session.flush()
         return existing
 

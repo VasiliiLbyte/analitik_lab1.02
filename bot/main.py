@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import sys
+from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -30,6 +33,13 @@ logger = logging.getLogger(__name__)
 def _create_storage(settings):
     """Create FSM storage: Redis if available, MemoryStorage as fallback."""
     try:
+        parsed = urlparse(settings.redis_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 6379
+        # Fast preflight check: if TCP connection fails, do not use RedisStorage.
+        with socket.create_connection((host, port), timeout=1.0):
+            pass
+
         from aiogram.fsm.storage.redis import RedisStorage
         storage = RedisStorage.from_url(
             settings.redis_url,
@@ -90,9 +100,14 @@ async def main() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
 
+    session = AiohttpSession(proxy=settings.telegram_proxy) if settings.telegram_proxy else AiohttpSession()
+    if settings.telegram_proxy:
+        logger.info("Using Telegram proxy: %s", settings.telegram_proxy)
+
     bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=session,
     )
     dp = create_dispatcher()
 

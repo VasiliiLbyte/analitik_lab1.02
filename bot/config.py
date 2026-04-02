@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     )
 
     bot_token: str
+    telegram_proxy: str = ""
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "sqlite+aiosqlite:///bot.db"
 
