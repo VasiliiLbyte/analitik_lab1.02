@@ -22,7 +22,6 @@ from bot.config import get_settings, setup_logging
 from bot.database.session import close_db, init_db
 from bot.handlers import cart, faq, free_text, kp_form, services, start
 from bot.middleware.anti_flood import AntiFloodMiddleware
-from bot.services.kp_generator import create_template
 from bot.services.price_loader import PriceLoader
 
 logger = logging.getLogger(__name__)
@@ -49,12 +48,6 @@ async def on_startup(bot: Bot) -> None:
     await init_db(settings.database_url)
 
     PriceLoader.get()
-
-    from bot.config import TEMPLATES_DIR
-    template_path = TEMPLATES_DIR / "kp_template.docx"
-    if not template_path.exists():
-        create_template()
-        logger.info("KP template created on startup")
 
     me = await bot.get_me()
     logger.info("Bot started: @%s (%s)", me.username, me.full_name)

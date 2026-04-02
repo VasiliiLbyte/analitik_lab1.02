@@ -1,6 +1,6 @@
 """Commercial Proposal (КП) Word document generator.
 
-Generates .docx files matching the exact format from the PDF examples:
+Builds .docx files matching the exact format from the PDF examples:
   - Header: "Коммерческое предложение № XX от DD MMMM YYYY г."
   - Executor: full legal details of ООО "АНАЛИТИК.ЛАБ"
   - Customer: data from KP form
@@ -8,9 +8,8 @@ Generates .docx files matching the exact format from the PDF examples:
   - Protocol fee (3%), NDS (5%), Grand total
   - Total in words via num2words
 
-Two-phase approach:
-  1. create_template() — builds the .docx template with jinja2 tags (run once)
-  2. generate_kp() — renders the template with actual order data
+Uses python-docx directly for full control over cell formatting.
+No fragile docxtpl row-loop tags.
 """
 
 from __future__ import annotations
@@ -24,11 +23,10 @@ from pathlib import Path
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Cm, Pt
-from docxtpl import DocxTemplate
+from docx.shared import Cm, Pt, RGBColor
 from num2words import num2words
 
-from bot.config import GENERATED_DIR, TEMPLATES_DIR, get_settings
+from bot.config import GENERATED_DIR, get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -81,16 +79,11 @@ def _format_date_ru(d: datetime.date) -> str:
 
 
 def _amount_in_words(amount: float) -> str:
-    """Convert amount to Russian words: 'Тридцать семь тысяч ... рублей XX копеек'."""
+    """'Тридцать семь тысяч ... рублей XX копеек'."""
     rubles = int(amount)
     kopecks = round((amount - rubles) * 100)
-
     rubles_text = num2words(rubles, lang="ru").capitalize()
-
-    ruble_word = _decline_rubles(rubles)
-    kopeck_word = _decline_kopecks(kopecks)
-
-    return f"{rubles_text} {ruble_word} {kopecks:02d} {kopeck_word}"
+    return f"{rubles_text} {_decline_rubles(rubles)} {kopecks:02d} {_decline_kopecks(kopecks)}"
 
 
 def _decline_rubles(n: int) -> str:
@@ -117,91 +110,20 @@ def _decline_kopecks(n: int) -> str:
     return "копеек"
 
 
-def create_template() -> Path:
-    """Programmatically create the KP docx template with jinja2 tags."""
-    TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
-    template_path = TEMPLATES_DIR / "kp_template.docx"
+def _fmt(value: float) -> str:
+    return f"{value:,.2f}".replace(",", " ")
 
-    doc = Document()
 
-    style = doc.styles["Normal"]
-    font = style.font
-    font.name = "Times New Roman"
-    font.size = Pt(11)
-
-    for section in doc.sections:
-        section.top_margin = Cm(1.5)
-        section.bottom_margin = Cm(1.5)
-        section.left_margin = Cm(2)
-        section.right_margin = Cm(1.5)
-
-    # Title
-    title = doc.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = title.add_run("Коммерческое предложение № {{ kp_number }} от {{ kp_date }}")
-    run.bold = True
-    run.font.size = Pt(14)
-
-    # Executor
-    p = doc.add_paragraph()
-    run = p.add_run("Исполнитель:")
-    run.bold = True
-    doc.add_paragraph("{{ executor_full }}")
-
-    # Customer
-    p = doc.add_paragraph()
-    run = p.add_run("Заказчик:")
-    run.bold = True
-    doc.add_paragraph("{{ customer_full }}")
-
-    # Table header
-    table = doc.add_table(rows=1, cols=6)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    table.style = "Table Grid"
-
-    headers = ["№", "Товары (работы, услуги)", "Кол-во", "Ед.", "Цена", "Сумма"]
-    for i, header_text in enumerate(headers):
-        cell = table.rows[0].cells[i]
-        cell.text = header_text
-        for paragraph in cell.paragraphs:
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            for run in paragraph.runs:
-                run.bold = True
-                run.font.size = Pt(10)
-
-    # Jinja loop for category groups
-    row = table.add_row()
-    row.cells[0].text = ""
-    row.cells[1].text = (
-        "{%tr for group in groups %}"
-        "{{ group.name }}"
-    )
-    row.cells[5].text = "{{ group.subtotal }}"
-
-    row2 = table.add_row()
-    row2.cells[0].text = "{%tr for item in group.items %}\n{{ item.number }}"
-    row2.cells[1].text = "{{ item.name }}"
-    row2.cells[2].text = "{{ item.quantity }}"
-    row2.cells[3].text = "{{ item.unit }}"
-    row2.cells[4].text = "{{ item.unit_price }}"
-    row2.cells[5].text = "{{ item.total_price }}\n{%tr endfor %}\n{%tr endfor %}"
-
-    # Totals
-    doc.add_paragraph("")
-    doc.add_paragraph("Итого: {{ subtotal_str }} руб.")
-    doc.add_paragraph("Оформление протоколов (3%): {{ protocol_fee_str }} руб.")
-    doc.add_paragraph("Итого с оформлением: {{ total_before_nds_str }} руб.")
-    doc.add_paragraph("Кроме того НДС (5%): {{ nds_str }} руб.")
-
-    p = doc.add_paragraph()
-    run = p.add_run("Всего наименований {{ total_items }}, на сумму {{ total_str }} руб.")
-    run.bold = True
-
-    doc.add_paragraph("{{ total_words }}")
-
-    doc.save(str(template_path))
-    logger.info("KP template created at %s", template_path)
-    return template_path
+def _set_cell(cell, text: str, bold: bool = False, align=WD_ALIGN_PARAGRAPH.LEFT,
+              size: int = 10) -> None:
+    """Write text into a table cell with formatting."""
+    cell.text = ""
+    p = cell.paragraphs[0]
+    p.alignment = align
+    run = p.add_run(str(text))
+    run.font.size = Pt(size)
+    run.font.name = "Times New Roman"
+    run.bold = bold
 
 
 def build_kp_data(
@@ -273,70 +195,128 @@ def build_kp_data(
     )
 
 
-def _fmt(value: float) -> str:
-    return f"{value:,.2f}".replace(",", " ")
-
-
 def generate_kp(data: KPData) -> Path:
-    """Render the KP template with order data and return path to generated .docx."""
-    template_path = TEMPLATES_DIR / "kp_template.docx"
-    if not template_path.exists():
-        create_template()
-
+    """Build the KP .docx directly with python-docx and return the file path."""
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = GENERATED_DIR / f"KP_{data.kp_number}_{data.kp_date.isoformat()}.docx"
+    safe_number = data.kp_number.replace("/", "-")
+    output_path = GENERATED_DIR / f"KP_{safe_number}_{data.kp_date.isoformat()}.docx"
 
     settings = get_settings()
+    doc = Document()
 
-    executor_full = (
+    # --- Global font ---
+    style = doc.styles["Normal"]
+    style.font.name = "Times New Roman"
+    style.font.size = Pt(11)
+
+    for section in doc.sections:
+        section.top_margin = Cm(1.5)
+        section.bottom_margin = Cm(1.5)
+        section.left_margin = Cm(2)
+        section.right_margin = Cm(1.5)
+
+    # --- Title ---
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run(
+        f"Коммерческое предложение № {data.kp_number} "
+        f"от {_format_date_ru(data.kp_date)}"
+    )
+    run.bold = True
+    run.font.size = Pt(14)
+    run.font.name = "Times New Roman"
+
+    # --- Executor ---
+    p = doc.add_paragraph()
+    run = p.add_run("Исполнитель:\n")
+    run.bold = True
+    run.font.name = "Times New Roman"
+    p.add_run(
         f'{settings.executor_name}, ИНН {settings.executor_inn}, '
         f'КПП {settings.executor_kpp}, {settings.executor_address}'
-    )
-    customer_full = (
+    ).font.name = "Times New Roman"
+
+    # --- Customer ---
+    p = doc.add_paragraph()
+    run = p.add_run("Заказчик:\n")
+    run.bold = True
+    run.font.name = "Times New Roman"
+    p.add_run(
         f'{data.customer_name}, ИНН {data.customer_inn}, '
         f'КПП {data.customer_kpp}, {data.customer_address}'
+    ).font.name = "Times New Roman"
+
+    # --- Service table ---
+    COL_WIDTHS = [Cm(1), Cm(9), Cm(1.5), Cm(1.5), Cm(2.5), Cm(2.5)]
+    HEADERS = ["№", "Товары (работы, услуги)", "Кол-во", "Ед.", "Цена", "Сумма"]
+    CENTER = WD_ALIGN_PARAGRAPH.CENTER
+    RIGHT = WD_ALIGN_PARAGRAPH.RIGHT
+
+    num_cols = len(HEADERS)
+    table = doc.add_table(rows=1, cols=num_cols)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.style = "Table Grid"
+
+    for i, (hdr, w) in enumerate(zip(HEADERS, COL_WIDTHS)):
+        cell = table.rows[0].cells[i]
+        _set_cell(cell, hdr, bold=True, align=CENTER)
+        cell.width = w
+
+    # Rows: iterate groups and items
+    for group in data.groups:
+        # Category header row (merged across all columns)
+        row = table.add_row()
+        _set_cell(row.cells[0], "")
+        _set_cell(row.cells[1], group.name, bold=True)
+        _set_cell(row.cells[2], "")
+        _set_cell(row.cells[3], "")
+        _set_cell(row.cells[4], "")
+        _set_cell(row.cells[5], _fmt(group.subtotal), bold=True, align=RIGHT)
+
+        for item in group.items:
+            row = table.add_row()
+            _set_cell(row.cells[0], str(item.number), align=CENTER)
+            _set_cell(row.cells[1], item.name)
+            _set_cell(row.cells[2], str(item.quantity), align=CENTER)
+            _set_cell(row.cells[3], item.unit, align=CENTER)
+            _set_cell(row.cells[4], _fmt(item.unit_price), align=RIGHT)
+            _set_cell(row.cells[5], _fmt(item.total_price), align=RIGHT)
+
+    # Protocol fee row
+    row = table.add_row()
+    _set_cell(row.cells[0], "")
+    _set_cell(row.cells[1], "Оформление протоколов (3% от сметной стоимости)", bold=True)
+    _set_cell(row.cells[2], "")
+    _set_cell(row.cells[3], "")
+    _set_cell(row.cells[4], "")
+    _set_cell(row.cells[5], _fmt(data.protocol_fee), bold=True, align=RIGHT)
+
+    # --- Totals ---
+    doc.add_paragraph("")
+
+    p = doc.add_paragraph()
+    p.add_run(f"Итого: {_fmt(data.subtotal + data.protocol_fee)} руб.").font.name = "Times New Roman"
+
+    p = doc.add_paragraph()
+    p.add_run(f"Кроме того НДС (5%): {_fmt(data.nds)} руб.").font.name = "Times New Roman"
+
+    # Grand total (bold)
+    p = doc.add_paragraph()
+    run = p.add_run(
+        f"Всего наименований {data.total_items}, "
+        f"на сумму {_fmt(data.total)} руб."
     )
+    run.bold = True
+    run.font.name = "Times New Roman"
 
-    # Prepare template-friendly group dicts
-    groups_ctx = []
-    for g in data.groups:
-        groups_ctx.append({
-            "name": g.name,
-            "subtotal": _fmt(g.subtotal),
-            "items": [
-                {
-                    "number": it.number,
-                    "name": it.name,
-                    "quantity": it.quantity,
-                    "unit": it.unit,
-                    "unit_price": _fmt(it.unit_price),
-                    "total_price": _fmt(it.total_price),
-                }
-                for it in g.items
-            ],
-        })
-
-    context = {
-        "kp_number": data.kp_number,
-        "kp_date": _format_date_ru(data.kp_date),
-        "executor_full": executor_full,
-        "customer_full": customer_full,
-        "groups": groups_ctx,
-        "subtotal_str": _fmt(data.subtotal),
-        "protocol_fee_str": _fmt(data.protocol_fee),
-        "total_before_nds_str": _fmt(data.total_before_nds),
-        "nds_str": _fmt(data.nds),
-        "total_str": _fmt(data.total),
-        "total_items": data.total_items,
-        "total_words": data.total_words,
-    }
+    p = doc.add_paragraph()
+    run = p.add_run(data.total_words)
+    run.font.name = "Times New Roman"
 
     try:
-        tpl = DocxTemplate(str(template_path))
-        tpl.render(context)
-        tpl.save(str(output_path))
+        doc.save(str(output_path))
         logger.info("KP generated: %s", output_path)
         return output_path
     except Exception:
-        logger.exception("Failed to generate KP document")
+        logger.exception("Failed to save KP document")
         raise
