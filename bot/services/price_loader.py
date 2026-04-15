@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -110,21 +111,39 @@ class PriceLoader:
         """Return list of invalid service_ids."""
         return [sid for sid in service_ids if sid not in self._services_by_id]
 
-    def search(self, query: str, limit: int = 10) -> list[Service]:
-        """Fuzzy search services by name (case-insensitive substring + ratio)."""
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        return {
+            token for token in re.split(r"[^a-zA-Zа-яА-Я0-9]+", text.lower())
+            if len(token) >= 3
+        }
+
+    def search(self, query: str, limit: int = 10, strict: bool = False) -> list[Service]:
+        """Search services by name using substring, tokens and fuzzy ratio."""
         q = query.lower().strip()
         if not q:
             return []
 
+        query_tokens = self._tokenize(q)
         scored: list[tuple[float, Service]] = []
         for svc in self._all_services:
             name_lower = svc.name.lower()
+            name_tokens = self._tokenize(name_lower)
+            overlap = len(query_tokens & name_tokens) if query_tokens else 0
+
             if q in name_lower:
-                scored.append((0.9 + len(q) / len(name_lower) * 0.1, svc))
+                score = 0.9 + len(q) / len(name_lower) * 0.1
+                score += min(overlap * 0.03, 0.09)
+                scored.append((score, svc))
             else:
                 ratio = SequenceMatcher(None, q, name_lower).ratio()
-                if ratio > 0.35:
-                    scored.append((ratio, svc))
+                threshold = 0.55 if strict else 0.42
+                if ratio < threshold and overlap == 0:
+                    continue
+                if strict and len(query_tokens) >= 2 and overlap == 0:
+                    continue
+                score = ratio + min(overlap * 0.08, 0.24)
+                scored.append((score, svc))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [s for _, s in scored[:limit]]

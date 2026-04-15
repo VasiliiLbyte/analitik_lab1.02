@@ -103,12 +103,12 @@ async def callback_create_kp(callback: CallbackQuery, state: FSMContext) -> None
             await callback.answer()
             return
 
-        await state.set_state(KPForm.org_name)
+        await state.set_state(KPForm.inn)
         await callback.message.answer(  # type: ignore[union-attr]
             "📄 <b>Формирование коммерческого предложения</b>\n\n"
             f"В корзине: {summary.item_count} позиций на сумму "
             f"{summary.total:,.2f} руб. (с НДС)\n\n"
-            "<b>Шаг 1/9:</b> Введите название организации заказчика:",
+            "<b>Шаг 1/9:</b> Введите ИНН (10 или 12 цифр):",
             parse_mode="HTML",
             reply_markup=back_cancel_keyboard(),
         )
@@ -133,12 +133,12 @@ async def handle_create_kp_button(message: Message, state: FSMContext) -> None:
             )
             return
 
-        await state.set_state(KPForm.org_name)
+        await state.set_state(KPForm.inn)
         await message.answer(
             "📄 <b>Формирование коммерческого предложения</b>\n\n"
             f"В корзине: {summary.item_count} позиций на сумму "
             f"{summary.total:,.2f} руб. (с НДС)\n\n"
-            "<b>Шаг 1/9:</b> Введите название организации заказчика:",
+            "<b>Шаг 1/9:</b> Введите ИНН (10 или 12 цифр):",
             parse_mode="HTML",
             reply_markup=back_cancel_keyboard(),
         )

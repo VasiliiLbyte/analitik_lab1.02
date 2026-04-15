@@ -26,6 +26,7 @@ from bot.database.session import close_db, init_db
 from bot.handlers import cart, faq, free_text, kp_form, services, start
 from bot.middleware.anti_flood import AntiFloodMiddleware
 from bot.services.price_loader import PriceLoader
+from bot.services.runtime_lock import RuntimeLock
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,18 @@ def create_dispatcher() -> Dispatcher:
 async def main() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
+    logger.info("Application version: %s", settings.app_version)
+
+    runtime_lock: RuntimeLock | None = None
+    if settings.runtime_lock_enabled:
+        runtime_lock = RuntimeLock(settings.runtime_lock_path)
+        if not runtime_lock.acquire():
+            logger.error(
+                "Another bot instance is already running (lock: %s). "
+                "Stop existing process before restart.",
+                settings.runtime_lock_path,
+            )
+            sys.exit(2)
 
     session = AiohttpSession(proxy=settings.telegram_proxy) if settings.telegram_proxy else AiohttpSession()
     if settings.telegram_proxy:
@@ -116,6 +129,8 @@ async def main() -> None:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await bot.session.close()
+        if runtime_lock is not None:
+            runtime_lock.release()
 
 
 if __name__ == "__main__":

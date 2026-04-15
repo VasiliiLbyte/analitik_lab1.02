@@ -1,8 +1,8 @@
 """Handler: KP Form FSM — 6 data steps + preview + generate + send.
 
 Steps:
-  1. org_name      — Organisation name
-  2. inn           — ИНН (10/12 digits, checksum validated)
+  1. inn           — ИНН (10/12 digits, checksum validated)
+  2. org_name      — Organisation name
   3. kpp           — КПП (9 digits)
   4. address       — Legal address
   5. contact_person — Contact person full name
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 
 from aiogram import F, Router
 from aiogram.filters import StateFilter
@@ -32,10 +33,12 @@ from bot.database.session import get_session
 from bot.keyboards.main import (
     back_cancel_keyboard,
     confirm_preview_keyboard,
+    inn_autofill_keyboard,
     main_menu_keyboard,
     sample_return_keyboard,
 )
 from bot.services.cart_service import clear_cart, get_cart_items, get_cart_summary, get_or_create_user
+from bot.services.company_lookup import lookup_company_by_inn
 from bot.services.kp_generator import build_kp_data, generate_kp
 from bot.states.kp_form import KPForm
 from bot.utils.validators import (
@@ -52,10 +55,11 @@ logger = logging.getLogger(__name__)
 
 _CANCEL_WORDS = {"отмена", "отменить", "cancel", "стоп", "выход"}
 _BACK_WORDS = {"назад", "back"}
+_INN_LIKE_RE = re.compile(r"^\d{10}(\d{2})?$")
 
 _STEP_ORDER: list = [
-    KPForm.org_name,
     KPForm.inn,
+    KPForm.org_name,
     KPForm.kpp,
     KPForm.address,
     KPForm.contact_person,
@@ -67,8 +71,8 @@ _STEP_ORDER: list = [
 ]
 
 _STEP_PROMPTS = {
-    KPForm.org_name: "<b>Шаг 1/9:</b> Введите название организации заказчика:",
-    KPForm.inn: "<b>Шаг 2/9:</b> Введите ИНН (10 или 12 цифр):",
+    KPForm.inn: "<b>Шаг 1/9:</b> Введите ИНН (10 или 12 цифр):",
+    KPForm.org_name: "<b>Шаг 2/9:</b> Введите название организации заказчика:",
     KPForm.kpp: "<b>Шаг 3/9:</b> Введите КПП (9 цифр):",
     KPForm.address: "<b>Шаг 4/9:</b> Введите юридический адрес:",
     KPForm.contact_person: "<b>Шаг 5/9:</b> Введите ФИО контактного лица:",
@@ -97,6 +101,37 @@ _VALIDATORS = {
     KPForm.research_deadline: ("research_deadline", lambda v: (True, v.strip()[:300] or "не требуется")),
     KPForm.sample_return: ("sample_return", lambda v: (True, v.strip()[:300])),
 }
+
+
+def _resolve_next_step_from(current_step) -> object:
+    idx = _STEP_ORDER.index(current_step)
+    return _STEP_ORDER[idx + 1]
+
+
+def _next_step_after_autofill(data: dict) -> object:
+    if not data.get("org_name"):
+        return KPForm.org_name
+    if not data.get("kpp"):
+        return KPForm.kpp
+    if not data.get("address"):
+        return KPForm.address
+    return KPForm.contact_person
+
+
+def _looks_like_inn(text: str) -> bool:
+    return _INN_LIKE_RE.fullmatch(text.strip()) is not None
+
+
+async def _go_to_step(message: Message, state: FSMContext, step_state) -> None:
+    await state.set_state(step_state)
+    if step_state == KPForm.preview:
+        await _show_preview(message, state)
+        return
+    prompt = _STEP_PROMPTS[step_state]
+    keyboard = (
+        sample_return_keyboard() if step_state == KPForm.sample_return else back_cancel_keyboard()
+    )
+    await message.answer(prompt, reply_markup=keyboard, parse_mode="HTML")
 
 
 async def _handle_cancel(message: Message, state: FSMContext) -> bool:
@@ -183,6 +218,15 @@ async def handle_kp_step(message: Message, state: FSMContext) -> None:
 
     field_name, validator = _VALIDATORS[step_state]
 
+    if step_state == KPForm.org_name and _looks_like_inn(text):
+        await message.answer(
+            "⚠️ Похоже, вы ввели ИНН.\n"
+            "Нажмите «Назад» или перезапустите форму, чтобы начать с ИНН.",
+            reply_markup=back_cancel_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
     ok, result = validator(text)
     if not ok:
         await message.answer(
@@ -194,18 +238,36 @@ async def handle_kp_step(message: Message, state: FSMContext) -> None:
 
     await state.update_data(**{field_name: result})
 
-    # Move to next step
-    idx = _STEP_ORDER.index(step_state)
-    next_state = _STEP_ORDER[idx + 1]
+    if step_state == KPForm.inn:
+        company = await lookup_company_by_inn(result)
+        if company:
+            await state.update_data(
+                inn_autofill_candidate={
+                    "org_name": company.name,
+                    "kpp": company.kpp,
+                    "address": company.address,
+                    "ogrn": company.ogrn,
+                    "status": company.status,
+                }
+            )
+            status_text = f"\nСтатус: {company.status}" if company.status else ""
+            kpp_text = company.kpp or "—"
+            address_text = company.address or "—"
+            await message.answer(
+                "🔎 Нашёл реквизиты по ИНН:\n\n"
+                f"<b>Организация:</b> {company.name}\n"
+                f"<b>КПП:</b> {kpp_text}\n"
+                f"<b>Адрес:</b> {address_text}"
+                f"{status_text}\n\n"
+                "Подтвердите автозаполнение или перейдите к ручному вводу.",
+                reply_markup=inn_autofill_keyboard(),
+                parse_mode="HTML",
+            )
+            return
 
-    if next_state == KPForm.preview:
-        await state.set_state(KPForm.preview)
-        await _show_preview(message, state)
-    else:
-        await state.set_state(next_state)
-        prompt = _STEP_PROMPTS[next_state]
-        keyboard = sample_return_keyboard() if next_state == KPForm.sample_return else back_cancel_keyboard()
-        await message.answer(prompt, reply_markup=keyboard, parse_mode="HTML")
+    # Move to next step
+    next_state = _resolve_next_step_from(step_state)
+    await _go_to_step(message, state, next_state)
 
 
 async def _show_preview(message: Message, state: FSMContext, user_id: int | None = None) -> None:
@@ -386,12 +448,12 @@ async def callback_kp_confirm(callback: CallbackQuery, state: FSMContext) -> Non
 @router.callback_query(F.data == "kp_edit", StateFilter(KPForm.preview))
 async def callback_kp_edit(callback: CallbackQuery, state: FSMContext) -> None:
     """Go back to step 1 for editing."""
-    await state.set_state(KPForm.org_name)
+    await state.set_state(KPForm.inn)
     data = await state.get_data()
-    current_name = data.get("org_name", "")
+    current_inn = data.get("inn", "")
     await callback.message.answer(  # type: ignore[union-attr]
-        f"✏️ Текущее значение: {current_name}\n\n"
-        f"{_STEP_PROMPTS[KPForm.org_name]}",
+        f"✏️ Текущее значение: {current_inn}\n\n"
+        f"{_STEP_PROMPTS[KPForm.inn]}",
         reply_markup=back_cancel_keyboard(),
         parse_mode="HTML",
     )
@@ -406,6 +468,54 @@ async def callback_kp_cancel(callback: CallbackQuery, state: FSMContext) -> None
         "❌ Формирование КП отменено. Корзина сохранена.",
         reply_markup=main_menu_keyboard(),
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "inn_autofill:accept", StateFilter(KPForm.inn))
+async def callback_inn_autofill_accept(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    candidate = data.get("inn_autofill_candidate") or {}
+    if not candidate:
+        await callback.message.answer(  # type: ignore[union-attr]
+            "Не удалось получить данные автозаполнения. Продолжим вручную."
+        )
+        await _go_to_step(callback.message, state, KPForm.org_name)  # type: ignore[arg-type]
+        await callback.answer()
+        return
+
+    updates: dict[str, str] = {}
+    if candidate.get("org_name"):
+        ok, value = validate_org_name(candidate["org_name"])
+        if ok:
+            updates["org_name"] = value
+    if candidate.get("kpp"):
+        ok, value = validate_kpp(candidate["kpp"])
+        if ok:
+            updates["kpp"] = value
+    if candidate.get("address"):
+        ok, value = validate_address(candidate["address"])
+        if ok:
+            updates["address"] = value
+
+    await state.update_data(**updates, inn_autofill_candidate=None)
+
+    current_data = await state.get_data()
+    next_step = _next_step_after_autofill(current_data)
+
+    await callback.message.answer(  # type: ignore[union-attr]
+        "✅ Реквизиты применены. При необходимости их можно отредактировать через кнопку «Редактировать» на предпросмотре."
+    )
+    await _go_to_step(callback.message, state, next_step)  # type: ignore[arg-type]
+    await callback.answer()
+
+
+@router.callback_query(F.data == "inn_autofill:manual", StateFilter(KPForm.inn))
+async def callback_inn_autofill_manual(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(inn_autofill_candidate=None)
+    await callback.message.answer(  # type: ignore[union-attr]
+        "Хорошо, продолжим ввод реквизитов вручную."
+    )
+    await _go_to_step(callback.message, state, KPForm.org_name)  # type: ignore[arg-type]
     await callback.answer()
 
 

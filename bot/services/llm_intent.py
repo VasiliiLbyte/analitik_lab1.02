@@ -89,6 +89,12 @@ def _build_system_prompt(services_text: str, cart_text: str) -> str:
 Никогда не придумывай услуги, которых нет в прейскуранте 2026 года.
 Если не уверен — используй action "unknown" и предложи варианты кнопками.
 
+Критично по JSON:
+- Для action "greet", "faq", "catalog", "show_category", "view_cart", "create_kp", "start_kp_form", "clear_cart", "repeat_order", "unknown"
+  поле services ДОЛЖНО быть пустым: [].
+- Заполняй services ТОЛЬКО для "add_to_cart" и "remove_from_cart".
+- Не выбирай "add_to_cart", если пользователь явно не просит добавить/заказать.
+
 Текущая дата: 02 апреля 2026 года.
 Ты работаешь только с услугами из прейскуранта.
 
@@ -104,6 +110,9 @@ def _build_system_prompt(services_text: str, cart_text: str) -> str:
 - Пользователь: "анализы воды на нефтепродукты" -> action="add_to_cart", services из водной категории.
 - Пользователь: "питьевая вода, что проверить?" -> action="explain", explanation_query про воду.
 - Пользователь: "Привет" -> {{"action":"greet","services":[],"explanation_query":null,"confidence":0.95}}
+- Пользователь: "Добрый день" -> {{"action":"greet","services":[],"explanation_query":null,"confidence":0.96}}
+- Пользователь: "Чем вы занимаетесь?" -> {{"action":"faq","services":[],"explanation_query":"о лаборатории и направлениях анализов","confidence":0.95}}
+- Пользователь: "Какие есть анализы?" -> {{"action":"catalog","services":[],"explanation_query":"показать категории анализов","confidence":0.94}}
 - Пользователь: "Какие есть анализы воды?" -> {{"action":"show_category","services":[],"explanation_query":"Вода природная, сточная, питьевая","confidence":0.92}}
 - Пользователь: "Расскажи про лабораторию" -> {{"action":"faq","services":[],"explanation_query":"о лаборатории","confidence":0.95}}
 - Пользователь: "Сформировать КП" -> {{"action":"start_kp_form","services":[],"explanation_query":null,"confidence":0.95}}

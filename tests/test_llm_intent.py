@@ -40,6 +40,8 @@ class TestSystemPrompt:
         assert "Аналитик.Лаб" in prompt
         assert "add_to_cart" in prompt
         assert "ТОЛЬКО" in prompt
+        assert "поле services ДОЛЖНО быть пустым" in prompt
+        assert 'Пользователь: "Какие есть анализы?"' in prompt
 
     def test_includes_cart_text(self):
         prompt = _build_system_prompt("services", "Вода - анализ ×1")

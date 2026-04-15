@@ -63,6 +63,44 @@ _CLEAR_CART_KEYWORDS = {
     "clear cart",
     "clear the cart",
 }
+_GREETING_TOKENS = (
+    "привет",
+    "здравств",
+    "добрый день",
+    "доброе утро",
+    "добрый вечер",
+)
+_ACTIVITY_TOKENS = (
+    "чем занимает",
+    "что делаете",
+    "что вы делаете",
+    "чем вы занимаетесь",
+)
+_GENERAL_ANALYSIS_PATTERNS = (
+    "какие есть анализы",
+    "какие анализы",
+    "что за анализы",
+    "какие услуги",
+)
+_TOPIC_TOKENS = ("вод", "почв", "воздух", "радиац", "гамма", "шум", "вибрац")
+_DOMAIN_TOKENS = (
+    "анализ",
+    "лаборатор",
+    "проб",
+    "вода",
+    "почв",
+    "грунт",
+    "воздух",
+    "выброс",
+    "протокол",
+    "сзз",
+    "эми",
+    "шум",
+    "вибрац",
+    "кп",
+    "инн",
+    "кпп",
+)
 
 
 @router.message(StateFilter(None))
@@ -84,6 +122,25 @@ async def handle_free_text(message: Message, state: FSMContext) -> None:
     if any(token in lowered for token in about_tokens):
         from bot.handlers.faq import handle_about
         await handle_about(message)
+        return
+
+    # --- High-priority greetings (bypass LLM) ---
+    if any(token in lowered for token in _GREETING_TOKENS):
+        await message.answer(
+            "Здравствуйте! Я помогу подобрать анализы для воды, почвы, воздуха "
+            "и оформить коммерческое предложение.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return
+
+    # --- High-priority activity questions (bypass LLM) ---
+    if any(token in lowered for token in _ACTIVITY_TOKENS):
+        await message.answer(
+            "Мы экологическая лаборатория: проводим анализы воды, почв, воздуха, "
+            "измеряем физические факторы и готовим коммерческие предложения.\n"
+            "Напишите вашу задачу, и я подберу нужные услуги.",
+            reply_markup=main_menu_keyboard(),
+        )
         return
 
     # --- High-priority navigation to cart ---
@@ -129,8 +186,16 @@ async def handle_free_text(message: Message, state: FSMContext) -> None:
             if token in lowered:
                 topic_query = query
                 break
+        if topic_query is None and any(pattern in lowered for pattern in _GENERAL_ANALYSIS_PATTERNS):
+            await message.answer(
+                "У нас есть анализы по воде, почвам и грунтам, атмосферному воздуху, "
+                "физическим факторам, а также услуги выезда и пробоотбора.\n"
+                "Могу сразу открыть каталог или подсказать направление под вашу задачу.",
+                reply_markup=categories_keyboard(),
+            )
+            return
         if topic_query:
-            suggestions = loader.search(topic_query, limit=5)
+            suggestions = loader.search(topic_query, limit=5, strict=True)
             if suggestions:
                 lines = [f"🔎 <b>Похожие услуги по запросу «{text}»:</b>\n"]
                 for svc in suggestions:
@@ -154,7 +219,7 @@ async def handle_free_text(message: Message, state: FSMContext) -> None:
         )
         if query:
             loader = PriceLoader.get()
-            results = loader.search(query, limit=5)
+            results = loader.search(query, limit=5, strict=True)
             if results:
                 lines = [f"ℹ️ <b>Похожие услуги по запросу «{text}»:</b>\n"]
                 for svc in results:
@@ -179,7 +244,7 @@ async def handle_free_text(message: Message, state: FSMContext) -> None:
         )
         if query:
             loader = PriceLoader.get()
-            suggestions = loader.search(query, limit=5)
+            suggestions = loader.search(query, limit=5, strict=True)
             if suggestions:
                 lines = [f"🔎 <b>Нашёл похожие услуги по запросу «{text}»:</b>\n"]
                 for svc in suggestions:
@@ -238,17 +303,26 @@ async def handle_free_text(message: Message, state: FSMContext) -> None:
         intent.confidence < _CONFIDENCE_THRESHOLD
         and intent.action not in {"unknown", "greet", "faq", "show_category", "start_kp_form"}
     ):
+        if not _is_domain_like_query(cleaned):
+            await message.answer(
+                "Понял вас. Могу рассказать о направлениях лаборатории, "
+                "подобрать анализы под задачу или открыть каталог услуг.",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
+
         loader = PriceLoader.get()
-        suggestions = loader.search(cleaned, limit=3)
+        suggestions = loader.search(cleaned, limit=3, strict=True)
         if suggestions:
             pairs = [(s.id, s.name) for s in suggestions]
             await message.answer(
-                "🤔 Не совсем понял. Возможно, вы имели в виду:",
+                "🤔 Не совсем понял формулировку. Возможно, вас интересует:",
                 reply_markup=low_confidence_keyboard(pairs),
             )
         else:
             await message.answer(
-                "🤔 Не удалось распознать запрос. Попробуйте каталог:",
+                "🤔 Уточните, пожалуйста, какой анализ вас интересует, "
+                "или откройте каталог услуг.",
                 reply_markup=categories_keyboard(),
             )
         return
@@ -309,8 +383,16 @@ async def handle_free_text(message: Message, state: FSMContext) -> None:
         from bot.handlers.cart import handle_repeat_order
         await handle_repeat_order(message)
     else:
+        if not _is_domain_like_query(cleaned):
+            await message.answer(
+                "Я могу рассказать о направлениях лаборатории, "
+                "подобрать анализы или сразу открыть каталог.",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
+
         loader = PriceLoader.get()
-        suggestions = loader.search(cleaned, limit=3)
+        suggestions = loader.search(cleaned, limit=3, strict=True)
         if suggestions:
             pairs = [(s.id, s.name) for s in suggestions]
             await message.answer(
@@ -473,3 +555,8 @@ async def _handle_cart_quantity_update(message: Message, user_id: int, lowered_t
             f"{updated.service_name} → {updated.quantity} шт."
         )
         return True
+
+
+def _is_domain_like_query(text: str) -> bool:
+    lowered = text.lower()
+    return any(token in lowered for token in _DOMAIN_TOKENS)

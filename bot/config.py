@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     gigachat_client_id: str = ""
     gigachat_client_secret: str = ""
     gigachat_scope: str = "GIGACHAT_API_PERS"
+    dadata_api_key: str = ""
+    dadata_secret_key: str = ""
+    dadata_enabled: bool = True
+    dadata_timeout_sec: float = 5.0
+    app_version: str = "dev"
+    runtime_lock_enabled: bool = True
+    runtime_lock_path: str = "/tmp/analitik_lab_bot.lock"
+    admin_user_ids: str = ""
 
     log_level: str = "INFO"
 
@@ -62,6 +70,14 @@ class Settings(BaseSettings):
         if v not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
             raise ValueError(f"Invalid log_level: {v}")
         return v
+
+    @field_validator("runtime_lock_path")
+    @classmethod
+    def _validate_lock_path(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("runtime_lock_path cannot be empty")
+        return value
 
 
 @lru_cache(maxsize=1)

@@ -10,10 +10,12 @@ from __future__ import annotations
 import logging
 
 from aiogram import Router
+from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
+from bot.config import get_settings
 from bot.keyboards.main import main_menu_keyboard
 
 router = Router(name="start")
@@ -47,6 +49,17 @@ HELP_TEXT = (
 )
 
 
+def _parse_admin_ids(raw: str) -> set[int]:
+    ids: set[int] = set()
+    for item in raw.split(","):
+        value = item.strip()
+        if not value:
+            continue
+        if value.isdigit():
+            ids.add(int(value))
+    return ids
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     """Handle /start — always clears FSM state and shows main menu."""
@@ -62,3 +75,34 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
     await message.answer(HELP_TEXT, reply_markup=main_menu_keyboard(), parse_mode="HTML")
+
+
+@router.message(Command("debug_state"))
+async def cmd_debug_state(message: Message, state: FSMContext) -> None:
+    settings = get_settings()
+    admin_ids = _parse_admin_ids(settings.admin_user_ids)
+    user_id = message.from_user.id  # type: ignore[union-attr]
+
+    if user_id not in admin_ids:
+        await message.answer("⛔ Команда доступна только администратору.")
+        return
+
+    if message.chat.type != ChatType.PRIVATE:
+        await message.answer("⛔ Команда доступна только в личном чате с ботом.")
+        return
+
+    current_state = await state.get_state()
+    data = await state.get_data()
+    inn = data.get("inn", "—")
+    org_name = data.get("org_name", "—")
+    kpp = data.get("kpp", "—")
+
+    await message.answer(
+        "🛠 <b>Debug state</b>\n\n"
+        f"<b>App version:</b> {settings.app_version}\n"
+        f"<b>FSM state:</b> {current_state or '—'}\n"
+        f"<b>ИНН:</b> {inn}\n"
+        f"<b>Организация:</b> {org_name}\n"
+        f"<b>КПП:</b> {kpp}",
+        parse_mode="HTML",
+    )

@@ -86,3 +86,12 @@ def low_confidence_keyboard(suggestions: list[tuple[str, str]]) -> InlineKeyboar
         [InlineKeyboardButton(text="📋 Открыть каталог", callback_data="catalog")]
     )
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def inn_autofill_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Подтвердить и заполнить", callback_data="inn_autofill:accept")],
+            [InlineKeyboardButton(text="✏️ Ввести вручную", callback_data="inn_autofill:manual")],
+        ]
+    )
