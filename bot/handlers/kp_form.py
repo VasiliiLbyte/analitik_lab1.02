@@ -38,6 +38,7 @@ from bot.keyboards.main import (
     sample_return_keyboard,
 )
 from bot.services.cart_service import clear_cart, get_cart_items, get_cart_summary, get_or_create_user
+from bot.services import bitrix_service
 from bot.services.company_lookup import lookup_company_by_inn
 from bot.services.kp_generator import build_kp_data, generate_kp
 from bot.states.kp_form import KPForm
@@ -430,6 +431,33 @@ async def callback_kp_confirm(callback: CallbackQuery, state: FSMContext) -> Non
             ),
             parse_mode="HTML",
         )
+
+        try:
+            client_data = {
+                "company_name": data.get("org_name", ""),
+                "fio": data.get("contact_person", ""),
+                "inn": data.get("inn", ""),
+                "kpp": data.get("kpp", ""),
+                "address": data.get("address", ""),
+                "contact_person": data.get("contact_person", ""),
+                "contact_info": data.get("contact_info", ""),
+                "sample_location": data.get("sample_location", ""),
+                "research_deadline": data.get("research_deadline", ""),
+                "sample_return": data.get("sample_return", ""),
+            }
+            deal_id = await bitrix_service.create_lab_item(
+                client_data=client_data,
+                cart_items=cart_items,
+                total_sum=float(summary.total),
+                kp_number=kp_number,
+            )
+            if deal_id:
+                await callback.message.answer(  # type: ignore[union-attr]
+                    f"✅ Карточка в Bitrix24 создана (ID: {deal_id})"
+                )
+        except Exception:
+            logger.exception("Failed to create Bitrix24 item for KP %s", kp_number)
+
         await callback.message.answer(  # type: ignore[union-attr]
             "Главное меню:", reply_markup=main_menu_keyboard()
         )

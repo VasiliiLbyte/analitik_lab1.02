@@ -44,6 +44,9 @@ class Settings(BaseSettings):
         default=3.0, description="Оформление протоколов rate in %"
     )
 
+    bitrix_webhook_url: str = ""
+    bitrix_entity_type_id: int = 1062
+
     anti_flood_rate: float = Field(
         default=1.5, description="Min seconds between messages"
     )
@@ -78,6 +81,14 @@ class Settings(BaseSettings):
         if not value:
             raise ValueError("runtime_lock_path cannot be empty")
         return value
+
+    @property
+    def BITRIX_WEBHOOK_URL(self) -> str:
+        return self.bitrix_webhook_url
+
+    @property
+    def BITRIX_ENTITY_TYPE_ID(self) -> int:
+        return self.bitrix_entity_type_id
 
 
 @lru_cache(maxsize=1)
