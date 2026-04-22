@@ -92,6 +92,36 @@ def _build_services_short_list(cart_items: list, limit: int = 6) -> str:
     return "; ".join(parts) if parts else "—"
 
 
+def _split_contact_info(client_data: dict) -> tuple[str, str]:
+    contact_info = str(client_data.get("contact_info", "")).strip()
+    if "@" in contact_info:
+        return "", contact_info
+    return contact_info, ""
+
+
+def _build_services_detailed_list(cart_items: list) -> str:
+    if not cart_items:
+        return "—"
+
+    lines: list[str] = []
+    for idx, item in enumerate(cart_items, 1):
+        name = str(getattr(item, "service_name", "")).strip() or "Услуга"
+        unit = str(getattr(item, "unit", "шт")).strip() or "шт"
+        try:
+            quantity = int(getattr(item, "quantity", 1))
+        except Exception:
+            quantity = 1
+        try:
+            unit_price = float(getattr(item, "unit_price", 0.0))
+        except Exception:
+            unit_price = 0.0
+        line_total = round(unit_price * quantity, 2)
+        lines.append(
+            f"{idx}. {name} — {quantity} {unit} × {_fmt_money(unit_price)} ₽ = {_fmt_money(line_total)} ₽"
+        )
+    return "\n".join(lines)
+
+
 def _build_title(
     primary_service: str,
     client_data: dict,
@@ -127,15 +157,32 @@ async def create_lab_item(
     primary_service = _pick_primary_service_name(cart_items)
     title = _build_title(primary_service, client_data, date_str)
     services_short = _build_services_short_list(cart_items)
+    services_detailed = _build_services_detailed_list(cart_items)
     total_words = _amount_in_words(float(total_sum))
+    created_at = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
+    phone, email = _split_contact_info(client_data)
 
-    kp_text = f"КП №{kp_number}" if kp_number else "КП"
+    observers = [
+        int(x) for x in settings.BITRIX_OBSERVERS.split(",") if x.strip()
+    ]
+
+    fio = str(client_data.get("fio", "")).strip() or "—"
+    company_name = str(client_data.get("company_name", "")).strip() or "—"
+    inn = str(client_data.get("inn", "")).strip() or "—"
+    kpp = str(client_data.get("kpp", "")).strip() or "—"
+    kp_text = f"КП №{kp_number}" if kp_number else "КП №—"
     comments = (
-        f"{kp_text} сформировано в Telegram-боте.\n"
-        f"Сумма: {_fmt_money(float(total_sum))} ₽\n"
-        f"Сумма прописью: {total_words}\n"
-        f"Услуги: {services_short}\n"
-        f"Клиент: {json.dumps(client_data, ensure_ascii=False)}"
+        "Заказ из Telegram-бота\n"
+        f"Клиент: {fio} / {company_name}\n"
+        f"ИНН: {inn}   КПП: {kpp}\n"
+        f"Телефон: {phone or '—'}   Email: {email or '—'}\n\n"
+        "Услуги:\n"
+        f"{services_detailed}\n\n"
+        f"Итого: {_fmt_money(float(total_sum))} ₽ ({total_words})\n"
+        f"{kp_text}\n"
+        f"Кратко: {services_short}\n"
+        f"Создано автоматически {created_at}\n"
+        f"Данные клиента: {json.dumps(client_data, ensure_ascii=False)}"
     )
 
     payload = {
@@ -143,7 +190,8 @@ async def create_lab_item(
         "fields": {
             "title": title,
             "stageId": None,  # Let Bitrix set default stage ("Новое исследование")
-            "assignedBy": 1,
+            "assignedId": settings.BITRIX_ASSIGNED_ID,
+            "observers": observers,
             "comments": comments,
         },
     }

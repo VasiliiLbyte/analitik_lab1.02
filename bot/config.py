@@ -46,6 +46,8 @@ class Settings(BaseSettings):
 
     bitrix_webhook_url: str = ""
     bitrix_entity_type_id: int = 1062
+    bitrix_assigned_id: int = 27
+    bitrix_observers: str = "8,14,17,21,26"
 
     anti_flood_rate: float = Field(
         default=1.5, description="Min seconds between messages"
@@ -89,6 +91,14 @@ class Settings(BaseSettings):
     @property
     def BITRIX_ENTITY_TYPE_ID(self) -> int:
         return self.bitrix_entity_type_id
+
+    @property
+    def BITRIX_ASSIGNED_ID(self) -> int:
+        return self.bitrix_assigned_id
+
+    @property
+    def BITRIX_OBSERVERS(self) -> str:
+        return self.bitrix_observers
 
 
 @lru_cache(maxsize=1)
