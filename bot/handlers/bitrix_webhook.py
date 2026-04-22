@@ -17,6 +17,7 @@ from bot.database.session import get_session
 logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 _DYNAMIC_DOC_RE = re.compile(r"^DYNAMIC_(\d+)_(\d+)$")
+_QUERY_ID_RE = re.compile(r"(\d+)(?!.*\d)")
 STAGE_NAMES = {
     "DT1062_10:NEW": "Новое исследование",
     "DT1062_10:PROBE": "Забор проб",
@@ -124,6 +125,32 @@ def _extract_from_document_id(payload: dict) -> tuple[int | None, int | None]:
         return None, None
 
 
+def _extract_numeric_id(value: object) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        pass
+
+    match = _QUERY_ID_RE.match(text)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_stage_name(stage_name: str) -> str:
+    if stage_name.startswith("Общая/"):
+        return stage_name.split("/", 1)[1]
+    return stage_name
+
+
 @routes.post("/webhook/bitrix/stage_changed")
 async def handle_stage_changed(request: web.Request) -> web.Response:
     body_text = await request.text()
@@ -140,6 +167,11 @@ async def handle_stage_changed(request: web.Request) -> web.Response:
         except Exception:
             logger.warning("Failed to parse webhook payload, fallback to raw text")
 
+    query_payload = dict(request.query)
+    if query_payload:
+        logger.info("Bitrix webhook query params: %s", query_payload)
+        payload = {**query_payload, **payload}
+
     settings = get_settings()
 
     raw_entity_type = _extract_value(payload, "entityTypeId")
@@ -147,25 +179,25 @@ async def handle_stage_changed(request: web.Request) -> web.Response:
     raw_stage_id = _extract_value(payload, "stageId")
     raw_prev_stage_id = _extract_value(payload, "previousStageId")
 
-    if raw_entity_type is None or raw_item_id is None:
-        doc_entity_type_id, doc_item_id = _extract_from_document_id(payload)
-        if raw_entity_type is None and doc_entity_type_id is not None:
-            raw_entity_type = doc_entity_type_id
-        if raw_item_id is None and doc_item_id is not None:
-            raw_item_id = doc_item_id
+    doc_entity_type_id, doc_item_id = _extract_from_document_id(payload)
+    if raw_entity_type is None and doc_entity_type_id is not None:
+        raw_entity_type = doc_entity_type_id
+    if raw_item_id is None and doc_item_id is not None:
+        raw_item_id = doc_item_id
 
     try:
         entity_type_id = int(raw_entity_type) if raw_entity_type is not None else None
     except (TypeError, ValueError):
         entity_type_id = None
 
-    try:
-        item_id = int(raw_item_id) if raw_item_id is not None else None
-    except (TypeError, ValueError):
-        item_id = None
+    item_id = _extract_numeric_id(raw_item_id)
+    if entity_type_id is None and doc_entity_type_id is not None:
+        entity_type_id = doc_entity_type_id
+    if item_id is None and doc_item_id is not None:
+        item_id = doc_item_id
 
     stage_id = str(raw_stage_id) if raw_stage_id is not None else "unknown"
-    stage_name = STAGE_NAMES.get(stage_id, stage_id)
+    stage_name = _normalize_stage_name(STAGE_NAMES.get(stage_id, stage_id))
     previous_stage_id = (
         str(raw_prev_stage_id) if raw_prev_stage_id is not None else "unknown"
     )
