@@ -65,8 +65,6 @@ class KPData:
     contact_person: str
     contact_info: str
     sample_location: str = ""
-    research_deadline: str = ""
-    sample_return: str = ""
     groups: list[KPCategoryGroup] = field(default_factory=list)
     subtotal: float = 0.0
     protocol_fee: float = 0.0
@@ -140,8 +138,6 @@ def build_kp_data(
     contact_info: str,
     cart_items: list,
     sample_location: str = "",
-    research_deadline: str = "",
-    sample_return: str = "",
 ) -> KPData:
     """Build KPData from cart items, grouping by category with auto protocol fee."""
     settings = get_settings()
@@ -191,8 +187,6 @@ def build_kp_data(
         contact_person=contact_person,
         contact_info=contact_info,
         sample_location=sample_location,
-        research_deadline=research_deadline,
-        sample_return=sample_return,
         groups=groups,
         subtotal=subtotal,
         protocol_fee=protocol_fee,
@@ -264,12 +258,6 @@ def generate_kp(data: KPData) -> Path:
 
     p = doc.add_paragraph()
     p.add_run(f"Фактическое местоположение объекта: {data.sample_location or 'не указано'}").font.name = "Times New Roman"
-    p = doc.add_paragraph()
-    p.add_run(f"Сроки проведения исследований: {data.research_deadline or 'не требуется'}").font.name = "Times New Roman"
-    p = doc.add_paragraph()
-    p.add_run(
-        f"Возврат неиспользованной части проб: {data.sample_return or 'не указано'}"
-    ).font.name = "Times New Roman"
 
     # --- Service table ---
     COL_WIDTHS = [Cm(1), Cm(9), Cm(1.5), Cm(1.5), Cm(2.5), Cm(2.5)]

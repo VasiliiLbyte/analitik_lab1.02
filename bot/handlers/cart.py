@@ -111,7 +111,7 @@ async def callback_create_kp(callback: CallbackQuery, state: FSMContext) -> None
             "📄 <b>Формирование коммерческого предложения</b>\n\n"
             f"В корзине: {summary.item_count} позиций на сумму "
             f"{summary.total:,.2f} руб. (с НДС)\n\n"
-            "<b>Шаг 1/9:</b> Введите ИНН (10 или 12 цифр):",
+            "<b>Шаг 1/7:</b> Введите ИНН (10 или 12 цифр):",
             parse_mode="HTML",
             reply_markup=back_cancel_keyboard(),
         )
@@ -141,7 +141,7 @@ async def handle_create_kp_button(message: Message, state: FSMContext) -> None:
             "📄 <b>Формирование коммерческого предложения</b>\n\n"
             f"В корзине: {summary.item_count} позиций на сумму "
             f"{summary.total:,.2f} руб. (с НДС)\n\n"
-            "<b>Шаг 1/9:</b> Введите ИНН (10 или 12 цифр):",
+            "<b>Шаг 1/7:</b> Введите ИНН (10 или 12 цифр):",
             parse_mode="HTML",
             reply_markup=back_cancel_keyboard(),
         )

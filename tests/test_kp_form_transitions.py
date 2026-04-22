@@ -66,20 +66,20 @@ async def test_kp_edit_moves_preview_to_inn_step():
 
     assert await state.get_state() == KPForm.inn.state
     assert message.answers
-    assert "Шаг 1/9" in message.answers[0]
+    assert "Шаг 1/7" in message.answers[0]
     assert "ИНН" in message.answers[0]
 
 
 @pytest.mark.asyncio
-async def test_preview_text_back_returns_to_sample_return_step():
+async def test_preview_text_back_returns_to_sample_location_step():
     state = _DummyState(KPForm.preview.state)
     message = _DummyMessage(text="назад")
 
     await kp_form.handle_preview_text(message, state)
 
-    assert await state.get_state() == KPForm.sample_return.state
+    assert await state.get_state() == KPForm.sample_location.state
     assert message.answers
-    assert "Шаг 9/9" in message.answers[0]
+    assert "Шаг 7/7" in message.answers[0]
 
 
 @pytest.mark.asyncio
@@ -95,7 +95,7 @@ async def test_kp_back_from_org_name_moves_to_inn():
 
     assert await state.get_state() == KPForm.inn.state
     assert message.answers
-    assert "Шаг 1/9" in message.answers[0]
+    assert "Шаг 1/7" in message.answers[0]
 
 
 @pytest.mark.asyncio
