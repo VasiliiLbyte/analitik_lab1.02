@@ -19,6 +19,43 @@ from num2words import num2words
 from bot.config import get_settings
 
 logger = logging.getLogger(__name__)
+STAGE_NAMES = {
+    "0": "Новое исследование",
+    "1": "Забор проб",
+    "2": "Ожидание проб",
+    "3": "Выполнение исследования",
+    "4": "Оформление протоколов",
+    "5": "Готово",
+    "6": "Отмена",
+    "NEW": "Новое исследование",
+    "PROBE": "Забор проб",
+    "WAIT_PROBE": "Ожидание проб",
+    "EXECUTION": "Выполнение исследования",
+    "PROTOCOL": "Оформление протоколов",
+    "DONE": "Готово",
+    "CANCEL": "Отмена",
+    "DT1062_10:NEW": "Новое исследование",
+    "DT1062_10:PROBE": "Забор проб",
+    "DT1062_10:WAIT_PROBE": "Ожидание проб",
+    "DT1062_10:EXECUTION": "Выполнение исследования",
+    "DT1062_10:PROTOCOL": "Оформление протоколов",
+    "DT1062_10:DONE": "Готово",
+    "DT1062_10:CANCEL": "Отмена",
+    "Общая/Новое исследование": "Новое исследование",
+    "Общая/Забор проб": "Забор проб",
+    "Общая/Ожидание проб": "Ожидание проб",
+    "Общая/Выполнение исследования": "Выполнение исследования",
+    "Общая/Оформление протоколов": "Оформление протоколов",
+    "Общая/Готово": "Готово",
+    "Общая/Отмена": "Отмена",
+    "Новое исследование": "Новое исследование",
+    "Забор проб": "Забор проб",
+    "Ожидание проб": "Ожидание проб",
+    "Выполнение исследования": "Выполнение исследования",
+    "Оформление протоколов": "Оформление протоколов",
+    "Готово": "Готово",
+    "Отмена": "Отмена",
+}
 
 
 def _fmt_money(amount: float) -> str:
@@ -54,6 +91,27 @@ def _amount_in_words(amount: float) -> str:
     kopecks = round((amount - rubles) * 100)
     rubles_text = num2words(rubles, lang="ru").capitalize()
     return f"{rubles_text} {_decline_rubles(rubles)} {kopecks:02d} {_decline_kopecks(kopecks)}"
+
+
+def _normalize_stage_name(stage_name: str) -> str:
+    value = (stage_name or "").strip()
+    if not value:
+        return "unknown"
+
+    mapped = STAGE_NAMES.get(value)
+    if mapped:
+        return mapped
+
+    if value.startswith("Общая/"):
+        short_value = value.split("/", 1)[1].strip()
+        return STAGE_NAMES.get(short_value, short_value or value)
+
+    if ":" in value:
+        suffix = value.rsplit(":", 1)[1].strip()
+        if suffix:
+            return STAGE_NAMES.get(suffix, suffix)
+
+    return value
 
 
 def _pick_primary_service_name(cart_items: list) -> str:
@@ -263,4 +321,38 @@ async def create_lab_item(
         logger.error("BITRIX CREATE FAILED", exc_info=True)
         logger.error("Full error: %s", str(e))
         return None
+
+
+async def get_current_stage(item_id: int) -> str:
+    """Fetch current Bitrix stage name for smart-process item."""
+    settings = get_settings()
+    webhook = (settings.BITRIX_WEBHOOK_URL or "").strip()
+    if not webhook:
+        logger.info("Bitrix webhook not configured, cannot fetch stage")
+        return "unknown"
+
+    base = webhook if webhook.endswith("/") else f"{webhook}/"
+    url = f"{base}crm.item.get"
+    payload = {
+        "entityTypeId": settings.BITRIX_ENTITY_TYPE_ID,
+        "id": int(item_id),
+    }
+    try:
+        timeout = aiohttp.ClientTimeout(total=12)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json=payload) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    logger.error("Bitrix stage ERROR %s: %s", resp.status, text)
+                    return "unknown"
+                data = await resp.json()
+    except Exception:
+        logger.exception("Bitrix stage request failed (item_id=%s)", item_id)
+        return "unknown"
+
+    item = ((data or {}).get("result") or {}).get("item") or {}
+    stage_id = str(item.get("stageId") or "").strip()
+    if not stage_id:
+        return "unknown"
+    return _normalize_stage_name(STAGE_NAMES.get(stage_id, stage_id))
 

@@ -10,20 +10,23 @@ Protection scenarios:
 from __future__ import annotations
 
 import logging
+import asyncio
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import select
 
+from bot.database.models import Order, User
 from bot.database.session import get_session
 from bot.keyboards.cart import cart_keyboard, empty_cart_keyboard
 from bot.keyboards.main import back_cancel_keyboard
+from bot.services import bitrix_service
 from bot.services.cart_service import (
     clear_cart,
     format_cart_text,
     get_cart_summary,
     remove_item,
-    repeat_last_order,
 )
 from bot.states.kp_form import KPForm
 
@@ -147,22 +150,65 @@ async def handle_create_kp_button(message: Message, state: FSMContext) -> None:
         await message.answer("❌ Ошибка при запуске формы КП.")
 
 
-@router.message(F.text == "🔄 Повторить заказ")
-async def handle_repeat_order(message: Message) -> None:
-    """Repeat last order: copy previous order items into the cart."""
-    user_id = message.from_user.id  # type: ignore[union-attr]
+@router.message(F.text == "📦 Статус заказа")
+async def handle_order_status(message: Message) -> None:
+    """Show current status for up to 5 latest Bitrix-linked orders."""
+    telegram_id = message.from_user.id  # type: ignore[union-attr]
     try:
         async with get_session() as session:
-            items = await repeat_last_order(session, user_id)
-
-        if items:
-            names = "\n".join(f"• {it.service_name} ×{it.quantity}" for it in items)
-            await message.answer(
-                f"🔄 Заказ повторён! В корзину добавлено:\n{names}",
-                parse_mode="HTML",
+            user_result = await session.execute(
+                select(User).where(User.telegram_id == telegram_id)
             )
-        else:
-            await message.answer("У вас пока нет предыдущих заказов для повторения.")
+            user = user_result.scalar_one_or_none()
+            if user is None:
+                await message.answer("У вас пока нет заказов, синхронизированных с Bitrix24.")
+                return
+
+            result = await session.execute(
+                select(Order)
+                .where(
+                    Order.user_id == user.id,
+                    Order.bitrix_item_id.is_not(None),
+                )
+                .order_by(Order.created_at.desc())
+                .limit(5)
+            )
+            orders = list(result.scalars().all())
+
+        if not orders:
+            await message.answer("У вас пока нет заказов, синхронизированных с Bitrix24.")
+            return
+
+        async def _get_stage(order: Order) -> tuple[Order, str]:
+            try:
+                stage_name = await bitrix_service.get_current_stage(order.bitrix_item_id)
+                return order, stage_name
+            except Exception:
+                logger.exception("Error getting stage for order_id=%s", order.id)
+                return order, "unknown"
+
+        staged_orders = await asyncio.gather(*[_get_stage(order) for order in orders])
+        visible_orders = [
+            (order, stage_name)
+            for order, stage_name in staged_orders
+            if str(stage_name).strip().lower() != "unknown"
+        ]
+        if not visible_orders:
+            await message.answer("У вас пока нет активных заказов с определённым статусом.")
+            return
+
+        if len(visible_orders) == 1:
+            order, stage_name = visible_orders[0]
+            await message.answer(f"Ваш заказ №{order.id} сейчас в статусе: {stage_name}")
+            return
+
+        lines = [f"• №{order.id} — {stage_name}" for order, stage_name in visible_orders]
+        await message.answer("Ваши последние заказы:\n" + "\n".join(lines))
     except Exception:
-        logger.exception("Error repeating order")
-        await message.answer("❌ Ошибка при повторении заказа.")
+        logger.exception("Error checking order status")
+        await message.answer("❌ Не удалось получить статус заказа. Попробуйте позже.")
+
+
+async def handle_repeat_order(message: Message) -> None:
+    """Backward-compatible alias used by free-text intent routing."""
+    await handle_order_status(message)

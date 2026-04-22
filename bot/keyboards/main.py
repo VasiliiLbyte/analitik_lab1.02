@@ -17,7 +17,7 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
             ],
             [
                 KeyboardButton(text="📄 Сформировать КП"),
-                KeyboardButton(text="🔄 Повторить заказ"),
+                KeyboardButton(text="📦 Статус заказа"),
             ],
             [
                 KeyboardButton(text="❓ FAQ"),
