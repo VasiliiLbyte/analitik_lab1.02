@@ -145,6 +145,12 @@ async def create_lab_item(
     Never raises (best-effort).
     """
     settings = get_settings()
+    logger.info("=== BITRIX CREATE START ===")
+    logger.info("Webhook URL: %s", settings.BITRIX_WEBHOOK_URL)
+    logger.info("entityTypeId: %s", settings.BITRIX_ENTITY_TYPE_ID)
+    logger.info("assignedId: %s", settings.BITRIX_ASSIGNED_ID)
+    logger.info("observers: %s", settings.BITRIX_OBSERVERS)
+
     webhook = (settings.BITRIX_WEBHOOK_URL or "").strip()
     if not webhook:
         logger.info("Bitrix webhook not configured, skipping item creation")
@@ -160,7 +166,9 @@ async def create_lab_item(
     services_detailed = _build_services_detailed_list(cart_items)
     total_words = _amount_in_words(float(total_sum))
     created_at = datetime.datetime.now().strftime("%d.%m.%Y %H:%M")
-    phone, email = _split_contact_info(client_data)
+    fallback_phone, fallback_email = _split_contact_info(client_data)
+    phone = str(client_data.get("phone", "")).strip() or fallback_phone
+    email = str(client_data.get("email", "")).strip() or fallback_email
 
     observers = [
         int(x) for x in settings.BITRIX_OBSERVERS.split(",") if x.strip()
@@ -171,6 +179,21 @@ async def create_lab_item(
     inn = str(client_data.get("inn", "")).strip() or "—"
     kpp = str(client_data.get("kpp", "")).strip() or "—"
     kp_text = f"КП №{kp_number}" if kp_number else "КП №—"
+    service_list = services_detailed
+    today_iso = datetime.date.today().isoformat()
+    research_period_iso = (
+        datetime.date.today() + datetime.timedelta(days=14)
+    ).isoformat()
+    uf_description = (
+        "Заказ из Telegram-бота\n"
+        f"Клиент: {fio} / {company_name}\n"
+        f"ИНН: {inn}   КПП: {kpp}\n"
+        f"Телефон: {phone or ''}\n"
+        f"Email: {email or ''}\n\n"
+        "Услуги:\n"
+        f"{service_list}\n\n"
+        f"Итого: {_fmt_money(float(total_sum))} ₽"
+    )
     comments = (
         "Заказ из Telegram-бота\n"
         f"Клиент: {fio} / {company_name}\n"
@@ -190,9 +213,16 @@ async def create_lab_item(
         "fields": {
             "title": title,
             "stageId": None,  # Let Bitrix set default stage ("Новое исследование")
-            "assignedId": settings.BITRIX_ASSIGNED_ID,
+            "assignedById": settings.BITRIX_ASSIGNED_ID,
             "observers": observers,
             "comments": comments,
+            "ufCrm7Description": uf_description,
+            "ufCrm7Getdate": today_iso,
+            "ufCrm7Researchperiod": research_period_iso,
+            "ufCrm7Rescomment": (
+                f"{kp_text} создано в Telegram-боте "
+                f"{datetime.datetime.now():%d.%m.%Y %H:%M}"
+            ),
         },
     }
 
@@ -207,20 +237,16 @@ async def create_lab_item(
         timeout = aiohttp.ClientTimeout(total=12)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, json=payload) as resp:
-                text = await resp.text()
-                if resp.status >= 400:
-                    logger.warning(
-                        "Bitrix error: status=%s body=%s",
-                        resp.status,
-                        text[:2000],
+                if resp.status == 200:
+                    data = await resp.json()
+                    logger.info(
+                        "Bitrix SUCCESS: %s",
+                        json.dumps(data, ensure_ascii=False, indent=2),
                     )
+                else:
+                    data = await resp.text()
+                    logger.error("Bitrix ERROR %s: %s", resp.status, data)
                     return None
-
-        try:
-            data = json.loads(text)
-        except Exception:
-            logger.warning("Bitrix response is not JSON: %s", text[:2000])
-            return None
 
         item = ((data or {}).get("result") or {}).get("item") or {}
         item_id = item.get("id")
@@ -233,7 +259,8 @@ async def create_lab_item(
         except Exception:
             logger.warning("Bitrix item id is not int-like: %r", item_id)
             return None
-    except Exception:
-        logger.exception("Bitrix request failed")
+    except Exception as e:
+        logger.error("BITRIX CREATE FAILED", exc_info=True)
+        logger.error("Full error: %s", str(e))
         return None
 

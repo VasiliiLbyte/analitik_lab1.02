@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import socket
 import sys
 from urllib.parse import urlparse
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -23,7 +25,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import get_settings, setup_logging
 from bot.database.session import close_db, init_db
-from bot.handlers import cart, faq, free_text, kp_form, services, start
+from bot.handlers import bitrix_webhook, cart, faq, free_text, kp_form, services, start
 from bot.middleware.anti_flood import AntiFloodMiddleware
 from bot.services.price_loader import PriceLoader
 from bot.services.runtime_lock import RuntimeLock
@@ -67,6 +69,27 @@ async def on_startup(bot: Bot) -> None:
 async def on_shutdown(bot: Bot) -> None:
     await close_db()
     logger.info("Bot shutting down")
+
+
+async def _start_bitrix_webhook_server(bot: Bot) -> web.AppRunner:
+    host = os.getenv("BITRIX_WEBHOOK_HOST", "0.0.0.0")
+    port = int(os.getenv("BITRIX_WEBHOOK_PORT", "8080"))
+
+    app = web.Application()
+    app["bot"] = bot
+    app.add_routes(bitrix_webhook.routes)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host=host, port=port)
+    await site.start()
+
+    logger.info(
+        "Bitrix webhook server started: http://%s:%s/webhook/bitrix/stage_changed",
+        host,
+        port,
+    )
+    return runner
 
 
 def create_dispatcher() -> Dispatcher:
@@ -123,11 +146,15 @@ async def main() -> None:
         session=session,
     )
     dp = create_dispatcher()
+    webhook_runner: web.AppRunner | None = None
 
     logger.info("Starting polling...")
     try:
+        webhook_runner = await _start_bitrix_webhook_server(bot)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        if webhook_runner is not None:
+            await webhook_runner.cleanup()
         await bot.session.close()
         if runtime_lock is not None:
             runtime_lock.release()

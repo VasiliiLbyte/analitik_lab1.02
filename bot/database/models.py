@@ -83,6 +83,7 @@ class Order(Base):
     total_words: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="created")
     file_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    bitrix_item_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
 
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

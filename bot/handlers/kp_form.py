@@ -452,6 +452,10 @@ async def callback_kp_confirm(callback: CallbackQuery, state: FSMContext) -> Non
                 kp_number=kp_number,
             )
             if deal_id:
+                async with get_session() as session:
+                    saved_order = await session.get(Order, order.id)
+                    if saved_order is not None:
+                        saved_order.bitrix_item_id = int(deal_id)
                 await callback.message.answer(  # type: ignore[union-attr]
                     f"✅ Карточка в Bitrix24 создана (ID: {deal_id})"
                 )
