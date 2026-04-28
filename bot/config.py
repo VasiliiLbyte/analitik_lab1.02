@@ -46,8 +46,12 @@ class Settings(BaseSettings):
 
     bitrix_webhook_url: str = ""
     bitrix_entity_type_id: int = 1062
+    bitrix_category_id: int = 0
+    bitrix_initial_stage: str = "NEW"
     bitrix_assigned_id: int = 27
     bitrix_observers: str = "8,14,17,21,26"
+    # UF code for company INN in Bitrix (crm.company.list filter / crm.company.add); empty = skip INN field
+    bitrix_company_inn_uf: str = "UF_CRM_INN"
 
     anti_flood_rate: float = Field(
         default=1.5, description="Min seconds between messages"
@@ -99,6 +103,18 @@ class Settings(BaseSettings):
     @property
     def BITRIX_OBSERVERS(self) -> str:
         return self.bitrix_observers
+
+    @property
+    def BITRIX_CATEGORY_ID(self) -> int:
+        return self.bitrix_category_id
+
+    @property
+    def BITRIX_INITIAL_STAGE(self) -> str:
+        return self.bitrix_initial_stage
+
+    @property
+    def BITRIX_COMPANY_INN_UF(self) -> str:
+        return self.bitrix_company_inn_uf
 
 
 @lru_cache(maxsize=1)
