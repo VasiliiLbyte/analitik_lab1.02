@@ -300,6 +300,7 @@ async def find_or_create_company(
     base_url: str,
     inn: str,
     company_name: str,
+    client_data: dict[str, Any] | None = None,
 ) -> int | None:
     """Find company by INN (UF) or exact TITLE, else create. Returns ID or None."""
     settings = get_settings()
@@ -307,9 +308,23 @@ async def find_or_create_company(
     name_clean = (company_name or "").strip()
     if name_clean in ("", "—"):
         name_clean = ""
+    found_id: int | None = None
+    new_id: int | None = None
+    title_match = False
+    will_create_new = False
+
+    def _norm_title(value: str) -> str:
+        return " ".join((value or "").split()).casefold()
 
     if not inn_clean and not name_clean:
         logger.info("Bitrix company skip: no INN and no company name")
+        logger.info(
+            "find_or_create_company: INN=%s, found_id=%s, title_match=%s, will_create_new=%s",
+            inn_clean,
+            found_id,
+            title_match,
+            will_create_new,
+        )
         return None
 
     inn_uf = (settings.BITRIX_COMPANY_INN_UF or "").strip()
@@ -325,12 +340,38 @@ async def find_or_create_company(
                 "start": 0,
             },
         )
-        cid = _first_entity_id_from_list(list_data)
-        if cid is not None:
-            logger.info("Bitrix company found by INN (%s): id=%s", inn_uf, cid)
-            return cid
+        rows = (list_data or {}).get("result")
+        if isinstance(rows, list) and rows:
+            first_row = rows[0] if isinstance(rows[0], dict) else {}
+            try:
+                found_id = int(first_row.get("ID")) if first_row.get("ID") is not None else None
+            except (TypeError, ValueError):
+                found_id = None
+            found_title = str(first_row.get("TITLE") or "").strip()
+            title_match = _norm_title(found_title) == _norm_title(name_clean)
+            if found_id is not None and title_match:
+                will_create_new = False
+                logger.info(
+                    "find_or_create_company: INN=%s, found_id=%s, title_match=%s, will_create_new=%s",
+                    inn_clean,
+                    found_id,
+                    title_match,
+                    will_create_new,
+                )
+                return found_id
+            if found_id is not None and not title_match:
+                will_create_new = True
+                logger.info(
+                    "find_or_create_company: INN=%s, found_id=%s, title_match=%s, will_create_new=%s",
+                    inn_clean,
+                    found_id,
+                    title_match,
+                    will_create_new,
+                )
+        else:
+            will_create_new = True
 
-    if name_clean:
+    if found_id is None and name_clean and not will_create_new:
         list_data = await _bitrix_post_json(
             session,
             base_url,
@@ -341,15 +382,49 @@ async def find_or_create_company(
                 "start": 0,
             },
         )
-        cid = _first_entity_id_from_list(list_data)
-        if cid is not None:
-            logger.info("Bitrix company found by TITLE: id=%s", cid)
-            return cid
+        found_id = _first_entity_id_from_list(list_data)
+        if found_id is not None:
+            title_match = True
+            will_create_new = False
+            logger.info(
+                "find_or_create_company: INN=%s, found_id=%s, title_match=%s, will_create_new=%s",
+                inn_clean,
+                found_id,
+                title_match,
+                will_create_new,
+            )
+            return found_id
+        will_create_new = True
 
     title = name_clean or (f"Компания ИНН {inn_clean}" if inn_clean else "Клиент (Telegram)")
     fields: dict[str, Any] = {"TITLE": title}
-    if inn_clean and len(inn_clean) in (10, 12) and inn_uf:
-        fields[inn_uf] = inn_clean
+    payload_data = client_data or {}
+    kpp = str(payload_data.get("kpp") or "").strip()
+    address = str(payload_data.get("address") or "").strip()
+    phone = str(payload_data.get("phone") or payload_data.get("contact_info") or "").strip()
+    email = str(payload_data.get("email") or "").strip()
+
+    if address:
+        fields["ADDRESS_LEGAL"] = address
+    if phone:
+        fields["PHONE"] = [{"VALUE": _normalize_phone_for_bitrix(phone), "VALUE_TYPE": "WORK"}]
+    if email:
+        fields["EMAIL"] = [{"VALUE": _normalize_email(email), "VALUE_TYPE": "WORK"}]
+    fields["COMMENTS"] = (
+        "Создано через Telegram-бот\n"
+        f"ИНН: {inn}\n"
+        f"КПП: {kpp}\n"
+        f"Адрес: {address}"
+    )
+
+    logger.info(
+        "find_or_create_company: create payload keys=%s title=%s has_address_legal=%s has_phone=%s has_email=%s",
+        sorted(fields.keys()),
+        title,
+        bool(address),
+        bool(phone),
+        bool(email),
+    )
 
     add_data = await _bitrix_post_json(
         session,
@@ -359,23 +434,25 @@ async def find_or_create_company(
     )
     new_id = _extract_bitrix_entity_id(add_data)
     if new_id is not None:
-        logger.info("Bitrix company created: id=%s title=%s", new_id, title)
+        will_create_new = True
+        logger.info(
+            "find_or_create_company: INN=%s, found_id=%s, title_match=%s, will_create_new=%s",
+            inn_clean,
+            found_id,
+            title_match,
+            will_create_new,
+        )
         return new_id
 
-    if inn_uf in fields:
-        fields_retry = {"TITLE": title}
-        add_data = await _bitrix_post_json(
-            session,
-            base_url,
-            "crm.company.add",
-            {"fields": fields_retry},
-        )
-        new_id = _extract_bitrix_entity_id(add_data)
-        if new_id is not None:
-            logger.info("Bitrix company created (without INN UF): id=%s", new_id)
-            return new_id
-
     logger.warning("Bitrix company add failed or returned no id")
+    will_create_new = True
+    logger.info(
+        "find_or_create_company: INN=%s, found_id=%s, title_match=%s, will_create_new=%s",
+        inn_clean,
+        found_id,
+        title_match,
+        will_create_new,
+    )
     return None
 
 
@@ -385,55 +462,107 @@ async def find_or_create_contact(
     fio: str,
     phone: str,
     email: str,
+    force_create: bool = True,
 ) -> int | None:
-    """Find contact by phone or email, else create. Returns ID or None."""
+    """Find contact by strict phone+email+fio combo, else create. Returns ID or None."""
     phone_norm = _normalize_phone_for_bitrix(phone)
     email_norm = _normalize_email(email)
+    name, second_name, last_name = _parse_fio_for_contact(fio)
+    found_id: int | None = None
+    new_id: int | None = None
 
-    phone_filters: list[dict[str, Any]] = []
+    def _extract_multifield_values(row: dict[str, Any], key: str) -> list[str]:
+        values = row.get(key)
+        if not isinstance(values, list):
+            return []
+        result: list[str] = []
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get("VALUE") or "").strip()
+            if value:
+                result.append(value)
+        return result
+
+    def _contact_matches(row: dict[str, Any]) -> bool:
+        row_name = str(row.get("NAME") or "").strip()
+        row_second = str(row.get("SECOND_NAME") or "").strip()
+        row_last = str(row.get("LAST_NAME") or "").strip()
+        if name and row_name != name:
+            return False
+        if second_name and row_second != second_name:
+            return False
+        if last_name and row_last != last_name:
+            return False
+        if phone_norm:
+            row_phones = {
+                _normalize_phone_for_bitrix(v) for v in _extract_multifield_values(row, "PHONE")
+            }
+            if phone_norm not in row_phones:
+                return False
+        if email_norm:
+            row_emails = {_normalize_email(v) for v in _extract_multifield_values(row, "EMAIL")}
+            if email_norm not in row_emails:
+                return False
+        return True
+
+    strict_filter: dict[str, Any] = {}
     if phone_norm:
-        digits = "".join(c for c in phone_norm if c.isdigit())
-        phone_filters.extend(
-            [
-                {"PHONE": phone_norm},
-                {"%PHONE": phone_norm},
-                {"=PHONE": phone_norm},
-            ]
-        )
-        if digits and digits != phone_norm:
-            phone_filters.append({"%PHONE": digits})
+        strict_filter["=PHONE"] = phone_norm
+    if email_norm:
+        strict_filter["=EMAIL"] = email_norm
+    if last_name:
+        strict_filter["=LAST_NAME"] = last_name
+    if name:
+        strict_filter["=NAME"] = name
+    if second_name:
+        strict_filter["=SECOND_NAME"] = second_name
 
-    for flt in phone_filters:
+    if strict_filter:
         list_data = await _bitrix_post_json(
             session,
             base_url,
             "crm.contact.list",
-            {"filter": flt, "select": ["ID", "NAME", "LAST_NAME"], "start": 0},
+            {
+                "filter": strict_filter,
+                "select": ["ID", "NAME", "SECOND_NAME", "LAST_NAME", "PHONE", "EMAIL"],
+                "start": 0,
+            },
         )
-        cid = _first_entity_id_from_list(list_data)
-        if cid is not None:
-            logger.info("Bitrix contact found by phone filter %s: id=%s", flt, cid)
-            return cid
+        rows = (list_data or {}).get("result")
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if _contact_matches(row):
+                    try:
+                        found_id = int(row.get("ID"))
+                    except (TypeError, ValueError):
+                        found_id = None
+                    if found_id is not None:
+                        logger.info(
+                            "find_or_create_contact: searched by phone/email/fio, found=%s, created new=%s",
+                            found_id,
+                            new_id,
+                        )
+                        return found_id
 
-    if email_norm:
-        for flt in (
-            {"EMAIL": email_norm},
-            {"=EMAIL": email_norm},
-        ):
-            list_data = await _bitrix_post_json(
-                session,
-                base_url,
-                "crm.contact.list",
-                {"filter": flt, "select": ["ID"], "start": 0},
-            )
-            cid = _first_entity_id_from_list(list_data)
-            if cid is not None:
-                logger.info("Bitrix contact found by email: id=%s", cid)
-                return cid
-
-    name, second_name, last_name = _parse_fio_for_contact(fio)
-    if not name and not last_name and not phone_norm and not email_norm:
+    if not force_create and not name and not last_name and not phone_norm and not email_norm:
         logger.info("Bitrix contact skip create: no name/phone/email")
+        logger.info(
+            "find_or_create_contact: searched by phone/email/fio, found=%s, created new=%s",
+            found_id,
+            new_id,
+        )
+        return None
+
+    if not force_create and not strict_filter:
+        logger.info("Bitrix contact skip create: strict search data is empty")
+        logger.info(
+            "find_or_create_contact: searched by phone/email/fio, found=%s, created new=%s",
+            found_id,
+            new_id,
+        )
         return None
 
     fields: dict[str, Any] = {}
@@ -448,6 +577,15 @@ async def find_or_create_contact(
     if email_norm:
         fields["EMAIL"] = [{"VALUE": email_norm, "VALUE_TYPE": "WORK"}]
 
+    if not fields:
+        logger.info("Bitrix contact skip create: no data to create contact")
+        logger.info(
+            "find_or_create_contact: searched by phone/email/fio, found=%s, created new=%s",
+            found_id,
+            new_id,
+        )
+        return None
+
     add_data = await _bitrix_post_json(
         session,
         base_url,
@@ -456,10 +594,19 @@ async def find_or_create_contact(
     )
     new_id = _extract_bitrix_entity_id(add_data)
     if new_id is not None:
-        logger.info("Bitrix contact created: id=%s", new_id)
+        logger.info(
+            "find_or_create_contact: searched by phone/email/fio, found=%s, created new=%s",
+            found_id,
+            new_id,
+        )
         return new_id
 
     logger.warning("Bitrix contact add failed or returned no id")
+    logger.info(
+        "find_or_create_contact: searched by phone/email/fio, found=%s, created new=%s",
+        found_id,
+        new_id,
+    )
     return None
 
 
@@ -523,6 +670,7 @@ async def create_lab_item(
                 base,
                 inn if inn != "—" else "",
                 company_name if company_name != "—" else "",
+                client_data=client_data,
             )
             contact_id = await find_or_create_contact(
                 session,
