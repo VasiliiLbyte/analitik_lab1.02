@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     bitrix_initial_stage: str = "NEW"
     bitrix_assigned_id: int = 27
     bitrix_observers: str = "8,14,17,21,26"
+    bitrix_products_root_section_id: int = 0
     # UF code for company INN in Bitrix (crm.company.list filter / crm.company.add); empty = skip INN field
     bitrix_company_inn_uf: str = "UF_CRM_INN"
 
@@ -111,6 +112,10 @@ class Settings(BaseSettings):
     @property
     def BITRIX_INITIAL_STAGE(self) -> str:
         return self.bitrix_initial_stage
+
+    @property
+    def BITRIX_PRODUCTS_ROOT_SECTION_ID(self) -> int:
+        return self.bitrix_products_root_section_id
 
     @property
     def BITRIX_COMPANY_INN_UF(self) -> str:

@@ -27,10 +27,12 @@ from bot.config import get_settings, setup_logging
 from bot.database.session import close_db, init_db
 from bot.handlers import bitrix_webhook, cart, faq, free_text, kp_form, services, start
 from bot.middleware.anti_flood import AntiFloodMiddleware
+from bot.services.bitrix_service import BitrixService
 from bot.services.price_loader import PriceLoader
 from bot.services.runtime_lock import RuntimeLock
 
 logger = logging.getLogger(__name__)
+bitrix_service = BitrixService()
 
 
 def _create_storage(settings):
@@ -60,10 +62,21 @@ async def on_startup(bot: Bot) -> None:
     settings = get_settings()
     await init_db(settings.database_url)
 
-    PriceLoader.get()
-
     me = await bot.get_me()
     logger.info("Bot started: @%s (%s)", me.username, me.full_name)
+    logger.info("Starting Bitrix product synchronization...")
+    sync_result = await bitrix_service.sync_products()
+    logger.info(
+        "Product sync completed: loaded=%s added=%s updated=%s path=%s",
+        sync_result["loaded"],
+        sync_result["added"],
+        sync_result["updated"],
+        sync_result["path"],
+    )
+
+    price_loader = PriceLoader(use_synced=True)
+    price_loader.load()
+    PriceLoader._instance = price_loader
 
 
 async def on_shutdown(bot: Bot) -> None:

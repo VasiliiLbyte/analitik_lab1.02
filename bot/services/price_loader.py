@@ -23,6 +23,7 @@ from bot.config import DATA_DIR
 logger = logging.getLogger(__name__)
 
 _PRICE_FILE = DATA_DIR / "preyskurant_2026.json"
+_SYNCED_PRICE_FILE = DATA_DIR / "prices_synced.json"
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,8 @@ class Category:
 class PriceLoader:
     _instance: Optional[PriceLoader] = None
 
-    def __init__(self) -> None:
+    def __init__(self, use_synced: bool = True) -> None:
+        self._use_synced = use_synced
         self._categories: list[Category] = []
         self._services_by_id: dict[str, Service] = {}
         self._all_services: list[Service] = []
@@ -61,13 +63,25 @@ class PriceLoader:
         return cls._instance
 
     def load(self, path: Path | None = None) -> None:
-        fpath = path or _PRICE_FILE
-        with open(fpath, encoding="utf-8") as f:
-            data = json.load(f)
-
         self._categories = []
         self._services_by_id = {}
         self._all_services = []
+
+        if path is not None:
+            self._load_static_prices(path)
+            logger.info("PriceLoader: loaded %d services from static", len(self._all_services))
+            return
+
+        if self._use_synced and self._load_synced_prices():
+            logger.info("PriceLoader: loaded %d services from synced.json", len(self._all_services))
+            return
+
+        self._load_static_prices(_PRICE_FILE)
+        logger.info("PriceLoader: loaded %d services from static", len(self._all_services))
+
+    def _load_static_prices(self, path: Path = _PRICE_FILE) -> None:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
 
         for cat_data in data.get("categories", []):
             cat = Category(id=cat_data["id"], name=cat_data["name"])
@@ -88,11 +102,51 @@ class PriceLoader:
                 self._all_services.append(svc)
             self._categories.append(cat)
 
-        logger.info(
-            "Price list loaded: %d categories, %d services",
-            len(self._categories),
-            len(self._all_services),
-        )
+    def _load_synced_prices(self, path: Path = _SYNCED_PRICE_FILE) -> bool:
+        if not path.exists():
+            return False
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not data:
+            return False
+
+        categories_map: dict[str, Category] = {}
+        uncategorized = Category(id="uncategorized", name="Синхронизированные услуги")
+        for service_id, svc_data in data.items():
+            if not isinstance(svc_data, dict):
+                continue
+            category_id = str(svc_data.get("category_id", "")).strip() or "uncategorized"
+            category_name = str(svc_data.get("category_name", "")).strip() or "Синхронизированные услуги"
+            if category_id == "uncategorized":
+                cat = uncategorized
+            else:
+                cat = categories_map.get(category_id)
+                if cat is None:
+                    cat = Category(id=category_id, name=category_name)
+                    categories_map[category_id] = cat
+
+            svc = Service(
+                id=str(service_id),
+                name=str(svc_data.get("name", "")).strip() or f"Услуга {service_id}",
+                unit=str(svc_data.get("unit", "шт")).strip() or "шт",
+                price=float(svc_data.get("price", 0)),
+                nds_5pct=float(svc_data.get("nds_5pct", 0)),
+                category_id=cat.id,
+                category_name=cat.name,
+                is_percentage=bool(svc_data.get("is_percentage", False)),
+                percentage_rate=float(svc_data.get("percentage_rate", 0)),
+            )
+            cat.services.append(svc)
+            self._services_by_id[svc.id] = svc
+            self._all_services.append(svc)
+
+        self._categories.extend(sorted(categories_map.values(), key=lambda c: c.name.lower()))
+        if uncategorized.services:
+            self._categories.append(uncategorized)
+
+        if not self._categories:
+            return False
+        return True
 
     @property
     def categories(self) -> list[Category]:
